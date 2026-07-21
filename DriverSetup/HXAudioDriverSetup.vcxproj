@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project DefaultTargets="Build" ToolsVersion="Current" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup Label="ProjectConfigurations"><ProjectConfiguration Include="Release|x64"><Configuration>Release</Configuration><Platform>x64</Platform></ProjectConfiguration></ItemGroup>
+  <PropertyGroup Label="Globals"><ProjectGuid>{216CC0E6-4B4E-4523-AE39-42EFB43B9280}</ProjectGuid><RootNamespace>HXAudioDriverSetup</RootNamespace><WindowsTargetPlatformVersion>10.0</WindowsTargetPlatformVersion></PropertyGroup>
+  <Import Project="..\packages\Microsoft.Windows.SDK.CPP.10.0.28000.1839\build\Microsoft.Windows.SDK.cpp.props" />
+  <Import Project="..\packages\Microsoft.Windows.SDK.CPP.x64.10.0.28000.1839\build\native\Microsoft.Windows.SDK.cpp.x64.props" />
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
+  <PropertyGroup Label="Configuration"><ConfigurationType>Application</ConfigurationType><UseDebugLibraries>false</UseDebugLibraries><PlatformToolset>v143</PlatformToolset><CharacterSet>Unicode</CharacterSet><SpectreMitigation>false</SpectreMitigation></PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.props" />
+  <ImportGroup Label="ExtensionSettings"><Import Project="$(VCTargetsPath)\BuildCustomizations\masm.props" /></ImportGroup>
+  <PropertyGroup><OutDir>$(MSBuildProjectDirectory)\x64\Release\</OutDir><IntDir>$(MSBuildProjectDirectory)\x64\Release\obj\</IntDir><TargetName>HXAudioDriverSetup</TargetName></PropertyGroup>
+  <ItemDefinitionGroup><ClCompile><LanguageStandard>stdcpp17</LanguageStandard><WarningLevel>Level4</WarningLevel><AdditionalOptions>/utf-8 %(AdditionalOptions)</AdditionalOptions><PreprocessorDefinitions>UNICODE;_UNICODE;WIN32_LEAN_AND_MEAN;NOMINMAX;%(PreprocessorDefinitions)</PreprocessorDefinitions></ClCompile><Link><SubSystem>Console</SubSystem><AdditionalDependencies>setupapi.lib;newdev.lib;cfgmgr32.lib;advapi32.lib;ole32.lib;audiomediatypecrt.lib;%(AdditionalDependencies)</AdditionalDependencies></Link></ItemDefinitionGroup>
+  <ItemGroup><ClCompile Include="ApoManager.cpp" /><ClCompile Include="EngineBypass.cpp" /><ClCompile Include="HXAudioDriverSetup.cpp" /></ItemGroup>
+  <ItemGroup><MASM Include="AudioLimiterBypass.asm" /></ItemGroup>
+  <ItemGroup><ClInclude Include="ApoManager.h" /><ClInclude Include="EngineBypass.h" /></ItemGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
+  <Import Project="$(VCTargetsPath)\BuildCustomizations\masm.targets" />
+  <Import Project="..\packages\Microsoft.Windows.SDK.CPP.10.0.28000.1839\build\Microsoft.Windows.SDK.cpp.targets" />
+</Project>

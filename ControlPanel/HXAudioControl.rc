@@ -1,0 +1,4 @@
+#include "resource.h"
+
+IDI_HXAUDIO ICON "assets\\HXAudio.ico"
+IDR_HXAUDIO_PNG RCDATA "assets\\HXAudioIcon\\1024.png"

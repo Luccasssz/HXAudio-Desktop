@@ -1,0 +1,49 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project DefaultTargets="Build" ToolsVersion="Current" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup Label="ProjectConfigurations">
+    <ProjectConfiguration Include="Release|x64"><Configuration>Release</Configuration><Platform>x64</Platform></ProjectConfiguration>
+  </ItemGroup>
+  <PropertyGroup Label="Globals">
+    <ProjectGuid>{0B31F098-8FBB-4148-9A1B-CDA8781C85CD}</ProjectGuid>
+    <RootNamespace>HXAudioApo</RootNamespace>
+    <WindowsTargetPlatformVersion>10.0</WindowsTargetPlatformVersion>
+  </PropertyGroup>
+  <Import Project="..\packages\Microsoft.Windows.SDK.CPP.10.0.28000.1839\build\Microsoft.Windows.SDK.cpp.props" />
+  <Import Project="..\packages\Microsoft.Windows.SDK.CPP.x64.10.0.28000.1839\build\native\Microsoft.Windows.SDK.cpp.x64.props" />
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
+  <PropertyGroup Label="Configuration">
+    <ConfigurationType>DynamicLibrary</ConfigurationType>
+    <UseDebugLibraries>false</UseDebugLibraries>
+    <PlatformToolset>v143</PlatformToolset>
+    <CharacterSet>Unicode</CharacterSet>
+    <SpectreMitigation>false</SpectreMitigation>
+  </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.props" />
+  <PropertyGroup>
+    <OutDir>$(MSBuildProjectDirectory)\x64\Release\</OutDir>
+    <IntDir>$(MSBuildProjectDirectory)\x64\Release\obj\</IntDir>
+    <TargetName>HXAudioApo</TargetName>
+  </PropertyGroup>
+  <ItemDefinitionGroup>
+    <ClCompile>
+      <LanguageStandard>stdcpp17</LanguageStandard>
+      <WarningLevel>Level4</WarningLevel>
+      <AdditionalOptions>/utf-8 %(AdditionalOptions)</AdditionalOptions>
+      <PreprocessorDefinitions>UNICODE;_UNICODE;WIN32_LEAN_AND_MEAN;NOMINMAX;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+    </ClCompile>
+    <Link>
+      <SubSystem>Windows</SubSystem>
+      <GenerateManifest>false</GenerateManifest>
+      <ModuleDefinitionFile>HXAudioApo.def</ModuleDefinitionFile>
+      <AdditionalDependencies>audiobaseprocessingobject.lib;audiomediatypecrt.lib;audioeng.lib;legacy_stdio_definitions.lib;ole32.lib;advapi32.lib;uuid.lib;%(AdditionalDependencies)</AdditionalDependencies>
+    </Link>
+  </ItemDefinitionGroup>
+  <ItemGroup>
+    <ClCompile Include="HXAudioApo.cpp" />
+    <ClCompile Include="HXAudioApoDll.cpp" />
+  </ItemGroup>
+  <ItemGroup><ClInclude Include="HXAudioApo.h" /></ItemGroup>
+  <ItemGroup><None Include="HXAudioApo.def" /></ItemGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
+  <Import Project="..\packages\Microsoft.Windows.SDK.CPP.10.0.28000.1839\build\Microsoft.Windows.SDK.cpp.targets" />
+</Project>
