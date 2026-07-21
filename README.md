@@ -3,9 +3,6 @@
 APO version: 1.0.1b (internal test)  
 Author: Huber_HaYu
 
-HXAudio provides two mutually exclusive installation modes from one standard
-installer.
-
 ## APO global mode (recommended)
 
 The recommended mode installs `HXAudioApo.dll` as a Windows endpoint audio
