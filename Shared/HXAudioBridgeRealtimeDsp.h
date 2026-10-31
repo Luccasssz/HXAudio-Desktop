@@ -2,6 +2,7 @@
 #include <atomic>
 #include <type_traits>
 #include "HXAudioSmallSpeakerBass.h"
+#include "HXAudioCleanBass.h"
 
 namespace HXAudioBridgeDsp {
 // One producer and one consumer per queue. Neither waits for the other. Full
@@ -45,6 +46,7 @@ struct Parameters {
     double amount = 0.15;
     bool enabled = false;
     bool smallSpeaker = false;
+    bool cleanBass = false; // Only audible when small-speaker mode is enabled.
     uint64_t revision = 0;
 };
 inline bool Valid(const Parameters& p) noexcept {
@@ -56,7 +58,7 @@ inline bool Valid(const Parameters& p) noexcept {
 }
 inline bool SameValues(const Parameters& a, const Parameters& b) noexcept {
     return a.gainDb == b.gainDb && a.frequencyHz == b.frequencyHz &&
-        a.peqGainDb == b.peqGainDb && a.q == b.q && a.amount == b.amount && a.enabled == b.enabled && a.smallSpeaker == b.smallSpeaker;
+        a.peqGainDb == b.peqGainDb && a.q == b.q && a.amount == b.amount && a.enabled == b.enabled && a.smallSpeaker == b.smallSpeaker && a.cleanBass == b.cleanBass;
 }
 inline bool SamePeq(const Parameters& a, const Parameters& b) noexcept {
     return a.frequencyHz == b.frequencyHz && a.peqGainDb == b.peqGainDb && a.q == b.q;
@@ -120,7 +122,9 @@ public:
         m_gain.Reset(std::pow(10.0, m_target.gainDb / 20));
         m_amount.Reset(m_target.amount); m_enabled.Reset(m_target.enabled ? 1 : 0);
         m_speakerMix.Reset(m_target.smallSpeaker ? 1 : 0);
+        m_cleanMix.Reset(m_target.cleanBass ? 1 : 0);
         m_smallSpeaker.Configure(m_rate,m_channels);
+        m_cleanSpeaker.Configure(m_rate,m_channels);
         DspSettings bass; bass.virtualBassEnabled = true; bass.virtualBassAmount = m_target.amount;
         m_bass.Configure(m_rate, m_channels, bass);
         for (auto& bank : m_peq) { bank.Prepare(m_channels); bank.Retune(Coefficients(m_target)); }
@@ -135,13 +139,14 @@ public:
             m_amount.Set(next.amount, m_rampFrames);
             m_enabled.Set(next.enabled ? 1 : 0, m_rampFrames);
             m_speakerMix.Set(next.smallSpeaker ? 1 : 0,m_rampFrames);
+            m_cleanMix.Set(next.cleanBass ? 1 : 0,m_rampFrames);
         }
         if (!Fading() && !SamePeq(m_target, m_peqTarget)) {
             m_peq[1-m_active].Retune(Coefficients(m_target));
             m_peqTarget = m_target; m_fadePosition = 0;
         }
         for (UINT32 frame = 0; frame < frames; ++frame) {
-            const double gain = m_gain.Next(), amount = m_amount.Next(), speakerMix=m_speakerMix.Next();
+            const double gain = m_gain.Next(), amount = m_amount.Next(), speakerMix=m_speakerMix.Next(), cleanMix=m_cleanMix.Next();
             // At 0%, bypass all bass processing. Keep the internal bass filters
             // warm, including while disabled, so rapid toggles never revive stale state.
             const double mix = m_enabled.Next() * std::min(1.0, amount / 0.01);
@@ -155,7 +160,9 @@ public:
                 const float dry = std::isfinite(samples[i]) ? samples[i] : 0;
                 const float legacy = m_bass.Process(dry, c);
                 const float optimized=m_smallSpeaker.Process(dry,c,amount);
-                const float bass=static_cast<float>(legacy+speakerMix*(optimized-legacy));
+                const float clean=m_cleanSpeaker.Process(dry,c,amount);
+                const float selected=static_cast<float>(optimized+cleanMix*(clean-optimized));
+                const float bass=static_cast<float>(legacy+speakerMix*(selected-legacy));
                 const float input = static_cast<float>((dry + mix * (bass - dry)) * gain);
                 const float a = m_peq[m_active].Process(input, c);
                 samples[i] = fade ? static_cast<float>(a + blend * (m_peq[1-m_active].Process(input, c) - a)) : a;
@@ -168,7 +175,7 @@ public:
         Status s; s.target=m_target; s.gainDb=20*std::log10(m_gain.current);
         s.amount=m_amount.current; s.enableMix=m_enabled.current;
         s.peqHz=m_peqTarget.frequencyHz; s.peqDb=m_peqTarget.peqGainDb; s.peqQ=m_peqTarget.q;
-        s.transitioning=Fading() || m_gain.remaining || m_amount.remaining || m_enabled.remaining || m_speakerMix.remaining || !SamePeq(m_target,m_peqTarget);
+        s.transitioning=Fading() || m_gain.remaining || m_amount.remaining || m_enabled.remaining || m_speakerMix.remaining || m_cleanMix.remaining || !SamePeq(m_target,m_peqTarget);
         return s;
     }
 private:
@@ -179,8 +186,9 @@ private:
     UINT32 m_rate=48000, m_channels=0, m_rampFrames=960, m_fadeFrames=1440, m_fadePosition=1440;
     int m_active=0;
     Parameters m_target, m_peqTarget;
-    Ramp m_gain, m_amount, m_enabled, m_speakerMix;
+    Ramp m_gain, m_amount, m_enabled, m_speakerMix, m_cleanMix;
     SmallSpeakerBassProcessor m_smallSpeaker;
+    CleanSmallSpeakerBassProcessor m_cleanSpeaker;
     VirtualBassProcessor m_bass;
     PeqBank m_peq[2];
     Control* m_control=nullptr;
