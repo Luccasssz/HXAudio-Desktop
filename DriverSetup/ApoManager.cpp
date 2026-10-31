@@ -3832,7 +3832,7 @@ namespace HXAudioApoManager
                 [&] { ++virtualCalls; return 8; }, [&] { ++finalizeCalls; return 0; });
             ok = ok && purgeResult == 8 && virtualCalls == 1 && finalizeCalls == 0 &&
                 QueryRegistryStringValue(backup, L"RecoverySentinel", sentinel) && sentinel == L"OEM original";
-            for (int retry = 0; retry < 2; ++retry) {
+            for (int repeat = 0; repeat < 2; ++repeat) {
                 purgeResult = HXAudioSafety::Purge([] { return 0; }, [] { return 0; },
                     [&] { ++finalizeCalls; return 0; });
                 ok = ok && purgeResult == 0 && QueryRegistryStringValue(backup, L"RecoverySentinel", sentinel) &&
