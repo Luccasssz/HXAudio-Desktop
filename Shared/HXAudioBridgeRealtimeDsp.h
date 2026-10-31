@@ -160,7 +160,11 @@ public:
                 const float dry = std::isfinite(samples[i]) ? samples[i] : 0;
                 const float legacy = m_bass.Process(dry, c);
                 const float optimized=m_smallSpeaker.Process(dry,c,amount);
-                const float clean=m_cleanSpeaker.Process(dry,c,amount);
+                const float multiband=m_cleanSpeaker.Process(dry,c,amount);
+                // Hybrid preserves a fraction of the already-auditioned punch
+                // while reducing broadband nonlinear cross-products. It is
+                // an experimental timbre compromise, not an IMD guarantee.
+                const float clean=static_cast<float>(0.40*optimized+0.60*multiband);
                 const float selected=static_cast<float>(optimized+cleanMix*(clean-optimized));
                 const float bass=static_cast<float>(legacy+speakerMix*(selected-legacy));
                 const float input = static_cast<float>((dry + mix * (bass - dry)) * gain);
