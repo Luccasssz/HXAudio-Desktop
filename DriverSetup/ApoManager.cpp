@@ -1233,12 +1233,17 @@ namespace HXAudioApoManager
             bool wasDisabled = false;
         };
 
-        std::vector<ApoComponentBackup> ReadApoComponentBackups()
+        std::vector<ApoComponentBackup> ReadApoComponentBackups(bool* valid = nullptr)
         {
+            if (valid) *valid = true;
             std::vector<ApoComponentBackup> result;
             HKEY root = nullptr;
-            if (RegOpenKeyExW(HKEY_LOCAL_MACHINE, kComponentBackupPath, 0,
-                KEY_READ | KEY_WOW64_64KEY, &root) != ERROR_SUCCESS) return result;
+            const LONG opened = RegOpenKeyExW(HKEY_LOCAL_MACHINE, kComponentBackupPath, 0,
+                KEY_READ | KEY_WOW64_64KEY, &root);
+            if (opened != ERROR_SUCCESS) {
+                if (valid && opened != ERROR_FILE_NOT_FOUND) *valid = false;
+                return result;
+            }
             DWORD index = 0;
             wchar_t name[64]{};
             while (true)
@@ -1247,10 +1252,11 @@ namespace HXAudioApoManager
                 const LONG enumerate = RegEnumKeyExW(root, index++, name, &length,
                     nullptr, nullptr, nullptr, nullptr);
                 if (enumerate == ERROR_NO_MORE_ITEMS) break;
-                if (enumerate != ERROR_SUCCESS) continue;
+                if (enumerate != ERROR_SUCCESS) { if (valid) *valid = false; break; }
                 HKEY item = nullptr;
-                if (RegOpenKeyExW(root, name, 0, KEY_READ, &item) != ERROR_SUCCESS)
-                    continue;
+                if (RegOpenKeyExW(root, name, 0, KEY_READ, &item) != ERROR_SUCCESS) {
+                    if (valid) *valid = false; break;
+                }
                 ApoComponentBackup backup;
                 backup.keyName.assign(name, length);
                 DWORD disabled = 0;
@@ -1259,8 +1265,9 @@ namespace HXAudioApoManager
                 {
                     backup.wasDisabled = disabled != 0;
                     result.push_back(std::move(backup));
-                }
+                } else if (valid) *valid = false;
                 RegCloseKey(item);
+                if (valid && !*valid) break;
             }
             RegCloseKey(root);
             return result;
@@ -1325,7 +1332,7 @@ namespace HXAudioApoManager
             if (located != CR_SUCCESS)
                 located = CM_Locate_DevNodeW(&node,
                     const_cast<wchar_t*>(instanceId.c_str()), CM_LOCATE_DEVNODE_PHANTOM);
-            if (located != CR_SUCCESS) return located == CR_NO_SUCH_DEVNODE;
+            if (located != CR_SUCCESS) return false;
             const CONFIGRET result = enabled
                 ? CM_Enable_DevNode(node, 0)
                 : CM_Disable_DevNode(node, CM_DISABLE_PERSIST);
@@ -1481,8 +1488,11 @@ namespace HXAudioApoManager
 
         bool RestoreAllApoComponents(bool& changed)
         {
+            bool validBackups = false;
+            const auto backups = ReadApoComponentBackups(&validBackups);
+            if (!validBackups) return false;
             bool ok = true;
-            for (const auto& backup : ReadApoComponentBackups())
+            for (const auto& backup : backups)
             {
                 if (!backup.wasDisabled)
                 {
@@ -2239,9 +2249,21 @@ namespace HXAudioApoManager
 
             const std::wstring backupPath = std::wstring(kBackupPath) + L"\\" + endpoint;
             HKEY backup = nullptr;
-            const bool hasBackup = RegOpenKeyExW(HKEY_LOCAL_MACHINE, backupPath.c_str(), 0,
-                KEY_READ | KEY_WOW64_64KEY, &backup) == ERROR_SUCCESS;
+            const LONG backupOpen = RegOpenKeyExW(HKEY_LOCAL_MACHINE, backupPath.c_str(), 0,
+                KEY_READ | KEY_WOW64_64KEY, &backup);
+            if (backupOpen != ERROR_SUCCESS && backupOpen != ERROR_FILE_NOT_FOUND) {
+                RegCloseKey(fx); return backupOpen;
+            }
+            const bool hasBackup = backupOpen == ERROR_SUCCESS;
             DWORD complete = 0;
+            if (hasBackup && (!QueryDword(backup, L"Complete", complete) || complete != 1)) {
+                RegCloseKey(backup); RegCloseKey(fx); return ERROR_INVALID_DATA;
+            }
+            if (!hasBackup) {
+                for (const auto& value : kEffectValues) {
+                    if (ValueContainsApo(fx, value.name)) { RegCloseKey(fx); return ERROR_NOT_FOUND; }
+                }
+            }
             bool ok = true;
             bool restoredCompleteSchema = false;
             if (hasBackup && QueryDword(backup, L"Complete", complete) && complete == 1)
@@ -3861,6 +3883,28 @@ namespace HXAudioApoManager
                 auto* oldOutput = std::wcout.rdbuf(exported.rdbuf());
                 const int exportExit = DiagnosticExport();
                 std::wcout.rdbuf(oldOutput);
+                HKEY fakeComponent = nullptr, fakeBackup = nullptr;
+                bool fakeRecoveryOk = RegCreateKeyExW(root, L"Software\\HXAudio\\Apo\\ComponentBackup\\0",
+                    0, nullptr, REG_OPTION_VOLATILE, KEY_ALL_ACCESS, nullptr, &fakeComponent, nullptr) == ERROR_SUCCESS;
+                bool validBackups = true;
+                if (fakeRecoveryOk) {
+                    fakeRecoveryOk = SetRegistryStringValue(fakeComponent, L"InstanceId", L"synthetic-component");
+                    ReadApoComponentBackups(&validBackups);
+                    fakeRecoveryOk = fakeRecoveryOk && !validBackups;
+                    fakeRecoveryOk = fakeRecoveryOk && SetDword(fakeComponent, L"WasDisabled", 0);
+                    const auto recoveredItems = ReadApoComponentBackups(&validBackups);
+                    fakeRecoveryOk = fakeRecoveryOk && validBackups && recoveredItems.size() == 1;
+                    RegCloseKey(fakeComponent);
+                }
+                fakeRecoveryOk = fakeRecoveryOk && RegCreateKeyExW(root, L"Software\\HXAudio\\Apo\\Backup\\endpoint",
+                    0, nullptr, REG_OPTION_VOLATILE, KEY_ALL_ACCESS, nullptr, &fakeBackup, nullptr) == ERROR_SUCCESS;
+                if (fakeRecoveryOk) {
+                    fakeRecoveryOk = SetDword(fakeBackup, L"Complete", 0);
+                    RegCloseKey(fakeBackup);
+                    bool changedOnBadBackup = false; DWORD badBackupStage = 0;
+                    fakeRecoveryOk = fakeRecoveryOk && RestoreEndpoint(root, L"endpoint", changedOnBadBackup,
+                        badBackupStage) == ERROR_INVALID_DATA && !changedOnBadBackup;
+                }
                 const LONG resetResult = RegOverridePredefKey(HKEY_LOCAL_MACHINE, nullptr);
                 DWORD validInstall = 0, recordedExit = 0, knownWin32 = 1;
                 std::wstring phase;
@@ -3869,7 +3913,7 @@ namespace HXAudioApoManager
                     QueryDword(fakeSettings, L"ApoInstallFailureWin32Known", knownWin32) &&
                     QueryRegistryStringValue(fakeSettings, L"ApoInstallFailurePhase", phase);
                 if ((resetResult != ERROR_SUCCESS || installExit != 40 || !recorded ||
-                    validInstall != 1 || recordedExit != 40 || knownWin32 != 0 || phase != L"validate-path" ||
+                    validInstall != 1 || recordedExit != 40 || knownWin32 != 0 || phase != L"validate-path" || !fakeRecoveryOk ||
                     exportExit != 0 || exported.str().find(L"ApoInstallFailureExitCode=40") == std::wstring::npos ||
                     captured.str().find(L"exit=40") == std::wstring::npos) && !result) result = 95;
             }
