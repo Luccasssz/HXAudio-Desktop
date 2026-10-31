@@ -10,6 +10,7 @@ struct Fake : Adapter {
     Phase phase = Phase::Pending;
     uint32_t progress = 0;
     bool isolated = true, trusted = true, valid = true, denyWrite = false;
+    bool oemAfterFirstWrite = false, mutateWrittenValue = false;
     int writes = 0, saves = 0, crashAt = -1, crashAfterWrite = -1;
     bool IsIsolated() override { return isolated; }
     bool TrustedOrigin() override { return trusted; }
@@ -21,6 +22,8 @@ struct Fake : Adapter {
     bool WriteValue(const std::wstring& name, const RawValue& value) override {
         if (denyWrite) return false;
         ++writes; values[name] = value;
+        if (oemAfterFirstWrite && writes == 1) values[L"other"].bytes = {99};
+        if (mutateWrittenValue) values[name].bytes = {98};
         if (writes == crashAfterWrite) throw std::runtime_error("injected after write");
         return true;
     }
@@ -63,6 +66,14 @@ int main() {
     if (Run(r, denied) != Result::IoError || denied.phase != Phase::Restoring) return 8;
     denied.denyWrite = false;
     if (Run(r, denied) != Result::Success) return 9;
+    Fake midUpdate = Installed(r); midUpdate.oemAfterFirstWrite = true;
+    if (Run(r, midUpdate) != Result::Conflict || midUpdate.writes != 1 ||
+        midUpdate.values[L"other"].bytes != std::vector<uint8_t>{99} || midUpdate.phase != Phase::Conflict) return 15;
+    Fake postwrite = Installed(r); postwrite.mutateWrittenValue = true;
+    if (Run(r, postwrite) != Result::IoError || postwrite.phase == Phase::Archived) return 16;
+    Record incorrectConfirmation = r; incorrectConfirmation.expectedInstalled[0].bytes = {44};
+    Fake unconfirmed = Installed(r);
+    if (Run(incorrectConfirmation, unconfirmed) != Result::Invalid || unconfirmed.writes) return 17;
     // Simulate interruption after each durable progress boundary, including
     // after the first property's write and before its completion record.
     for (int boundary = 1; boundary <= good.saves; ++boundary) {

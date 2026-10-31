@@ -4,6 +4,7 @@
 #include <bcrypt.h>
 #include <limits>
 #include <cstring>
+#include <utility>
 
 namespace HXAudioRecovery {
 inline void Put32(std::vector<uint8_t>& out, uint32_t value) {
