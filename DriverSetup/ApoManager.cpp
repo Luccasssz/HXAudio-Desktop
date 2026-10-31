@@ -3607,6 +3607,10 @@ namespace HXAudioApoManager
                 return failCode == ERROR_SUCCESS;
             });
             const InstallFailureDiagnostic originalFailure{true, failCode, failStage, failMask, L"endpoint"};
+            ok = ok && WriteInstallFailureDiagnostic(root, originalFailure);
+            DWORD preRollbackError = 0;
+            ok = ok && QueryDword(root, L"ApoInstallFailureError", preRollbackError) &&
+                preRollbackError == ERROR_NOT_FOUND;
             bool rollbackChanged = false;
             bool fallbackWorked = false;
             const bool oldVersionRestored = RunFailedInstallRollback(
