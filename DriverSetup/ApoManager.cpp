@@ -3583,12 +3583,64 @@ namespace HXAudioApoManager
                 savedError == ERROR_NOT_FOUND && savedStage == kStageVerify && savedMask == 33 &&
                 savedEndpoint == L"fake-endpoint" && guardError == ERROR_SUCCESS;
             if (!ok) result = 90;
+
+            // Integrate the real registry value backup, endpoint verifier,
+            // retry policy, rollback selection and preserved diagnostic on
+            // an isolated fake endpoint. No SCM or MMDevices access occurs.
+            RegDeleteValueW(fx, L"testAssociation");
+            RegDeleteValueW(fx, kPreMixValue);
+            RegDeleteValueW(fx, kSfxProcessingModesValue);
+            ok = SetDword(fx, kDisableSysFxValue, 0) &&
+                SetRegistryStringValue(fx, kSingleEndpointValue, L"OEM-original") &&
+                BackupValue(backup, fx, kSingleEndpointValue, L"TxnOriginal") &&
+                SetRegistryStringValue(fx, kSingleEndpointValue, kApoClsid);
+            RegDeleteValueW(fx, kEfxProcessingModesValue);
+            DWORD failStage = 0, failMask = 0, failCode = 0;
+            int runs = 0;
+            const bool unexpectedlyApplied = RunApplyAttempts([&](DWORD) {
+                ++runs;
+                failCode = VerifyEndpoint(root, L"endpoint", failStage, failMask);
+                return failCode == ERROR_SUCCESS;
+            });
+            const InstallFailureDiagnostic originalFailure{true, failCode, failStage, failMask, L"endpoint"};
+            bool rollbackChanged = false;
+            bool fallbackWorked = false;
+            const bool oldVersionRestored = RunFailedInstallRollback(
+                [&]() { return false; }, [&]() {
+                    fallbackWorked = RestoreValue(backup, fx, kSingleEndpointValue,
+                        L"TxnOriginal", rollbackChanged) &&
+                        SetDword(root, L"ApoLastError", ERROR_SUCCESS);
+                });
+            ok = ok && !unexpectedlyApplied && runs == 5 && failCode == ERROR_NOT_FOUND &&
+                failStage == kStageVerify && failMask == 2 && !oldVersionRestored &&
+                fallbackWorked && rollbackChanged && WriteInstallFailureDiagnostic(root, originalFailure);
+            std::wstring restoredOem, storedEndpoint;
+            DWORD storedError = 0, storedStage = 0, storedMask = 0;
+            ok = ok && QueryRegistryStringValue(fx, kSingleEndpointValue, restoredOem) &&
+                restoredOem == L"OEM-original" && QueryDword(root, L"ApoInstallFailureError", storedError) &&
+                QueryDword(root, L"ApoInstallFailureStage", storedStage) &&
+                QueryDword(root, L"ApoInstallFailureMask", storedMask) &&
+                QueryRegistryStringValue(root, L"ApoInstallFailureEndpoint", storedEndpoint) &&
+                storedError == ERROR_NOT_FOUND && storedStage == kStageVerify &&
+                storedMask == 2 && storedEndpoint == L"endpoint";
+
+            // Two failed verifies followed by a successful third attempt.
+            ok = ok && SetRegistryStringValue(fx, kSingleEndpointValue, kApoClsid);
+            runs = 0;
+            const bool eventuallyApplied = RunApplyAttempts([&](DWORD) {
+                ++runs;
+                if (runs == 3 && RegSetValueExW(fx, kEfxProcessingModesValue, 0,
+                    REG_MULTI_SZ, modes.data(), static_cast<DWORD>(modes.size())) != ERROR_SUCCESS)
+                    return false;
+                return VerifyEndpoint(root, L"endpoint", failStage, failMask) == ERROR_SUCCESS;
+            });
+            if (!ok || !eventuallyApplied || runs != 3) result = 91;
         }
         if (backup) RegCloseKey(backup);
         if (fx) RegCloseKey(fx);
         RegCloseKey(root);
         if (RegDeleteTreeW(HKEY_CURRENT_USER, path.c_str()) != ERROR_SUCCESS && !result) result = 85;
-        if (!result) std::wcout << L"64 masks, registry backup/restore, retry, rollback selection, and failure preservation passed.\n";
+        if (!result) std::wcout << L"64 masks, isolated registry transaction/retry/rollback, and failure preservation passed.\n";
         return result;
     }
 
