@@ -3171,16 +3171,38 @@ namespace HXAudioApoManager
 
     int Uninstall()
     {
-        const std::wstring dll = ReadString(HKEY_LOCAL_MACHINE, kApoPath, L"DllPath");
+        std::wstring dll;
         HKEY apoKey = nullptr;
         const LONG apoKeyOpen = RegOpenKeyExW(HKEY_LOCAL_MACHINE, kApoPath, 0,
                 KEY_READ | KEY_WOW64_64KEY, &apoKey);
         if (apoKeyOpen != ERROR_SUCCESS && apoKeyOpen != ERROR_FILE_NOT_FOUND)
             return 43;
+        DWORD cleanupComplete = 0;
+        if (apoKey) {
+            DWORD type = 0, size = 0;
+            LONG result = RegQueryValueExW(apoKey, L"DllPath", nullptr, &type, nullptr, &size);
+            if (result == ERROR_SUCCESS) {
+                if (type != REG_SZ || size < sizeof(wchar_t) || size % sizeof(wchar_t) || size > 65536) {
+                    RegCloseKey(apoKey); return 43;
+                }
+                std::vector<wchar_t> text(size / sizeof(wchar_t), L'\0');
+                result = RegQueryValueExW(apoKey, L"DllPath", nullptr, &type,
+                    reinterpret_cast<BYTE*>(text.data()), &size);
+                if (result != ERROR_SUCCESS || type != REG_SZ || size != text.size() * sizeof(wchar_t) ||
+                    text.back() != L'\0' || wcsnlen(text.data(), text.size()) != text.size() - 1) {
+                    RegCloseKey(apoKey); return 43;
+                }
+                dll.assign(text.data(), text.size() - 1);
+            } else if (result != ERROR_FILE_NOT_FOUND) { RegCloseKey(apoKey); return 43; }
+            type = 0; size = sizeof(cleanupComplete);
+            result = RegQueryValueExW(apoKey, L"CleanupComplete", nullptr, &type,
+                reinterpret_cast<BYTE*>(&cleanupComplete), &size);
+            if (result != ERROR_FILE_NOT_FOUND && (result != ERROR_SUCCESS || type != REG_DWORD ||
+                size != sizeof(cleanupComplete) || cleanupComplete > 1)) { RegCloseKey(apoKey); return 43; }
+            RegCloseKey(apoKey);
+        }
         const bool apoKeyExists = apoKeyOpen == ERROR_SUCCESS;
         const bool apoStateExists = !dll.empty() || apoKeyExists;
-        DWORD cleanupComplete = 0;
-        if (apoKey) { QueryDword(apoKey, L"CleanupComplete", cleanupComplete); RegCloseKey(apoKey); }
         // A persisted marker proves neither endpoint nor component state.
         // Until independent verification exists, fail closed and keep recovery
         // material instead of reporting an unverified successful cleanup.
