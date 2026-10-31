@@ -3463,7 +3463,7 @@ namespace HXAudioApoManager
                 DWORD stage = 0, mask = 0;
                 const DWORD error = VerifyEndpoint(root, L"endpoint", stage, mask);
                 if (!ok || mask != expected || stage != kStageVerify ||
-                    error != (expected ? ERROR_NOT_FOUND : ERROR_SUCCESS))
+                    error != static_cast<DWORD>(expected ? ERROR_NOT_FOUND : ERROR_SUCCESS))
                 {
                     std::wcerr << L"Verify case=" << expected << L" actual=" << mask
                         << L" stage=" << stage << L" error=" << error << std::endl;
