@@ -140,6 +140,8 @@ An experimentally split 3-band generator (approximately 32–58, 52–88,
 78–120 Hz, with overlapping IIR transitions) uses an independent envelope
 and nonlinear excitation per band. It places less emphasis on even
 harmonics and limits the added wet band to approximately 110–350 Hz.
+The final experimental bank blends 60% multiband with 40% of the established
+small-speaker sound to avoid losing punch from individual bass notes.
 The original low frequencies are retained. This is a lightweight
 multiband *experiment*, not a pitch-tracking or phase-vocoder system.
 
