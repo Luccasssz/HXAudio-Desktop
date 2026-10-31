@@ -9,6 +9,7 @@
 
 #include "EngineBypass.h"
 #include "ApoManager.h"
+#include "SafetyLogic.h"
 
 #pragma comment(lib, "setupapi.lib")
 #pragma comment(lib, "newdev.lib")
@@ -600,6 +601,8 @@ namespace
             SetupDiDestroyDeviceInfoList(set);
         }
 
+        else ok = false;
+
         // A vetoed/pending removal still owns the kernel image even when the
         // devnode briefly disappears from a present-only enumeration. Deleting
         // the package here leaves Windows with neither a working old device nor
@@ -607,7 +610,7 @@ namespace
         // as incomplete; a later uninstall can finish after Windows releases it.
         if (!ok || removalRequiresRestart || DeviceExists())
         {
-            DisarmRecovery();
+            // Keep recovery scheduling and PublishedInf until removal succeeds.
             SetLastError(ERROR_BUSY);
             std::wcerr << L"Virtual audio device is still in use; driver package was preserved.";
             return 8;
@@ -622,6 +625,11 @@ namespace
                 GetLastError() != ERROR_FILE_NOT_FOUND)
                 ok = false;
         }
+        if (!ok) {
+            std::wcerr << L"Driver package removal failed; settings and recovery data preserved.";
+            return 8;
+        }
+
         // Preserve user DSP settings and the parent key ACL across an in-place
         // mode switch. The full application uninstaller uses the explicit
         // purge command after both audio backends have been removed.
@@ -787,12 +795,15 @@ int wmain(int argc, wchar_t** argv)
         return HXAudioApoManager::LiveTest();
     if (argc >= 2 && _wcsicmp(argv[1], L"purge") == 0)
     {
-        const int apoResult = HXAudioApoManager::Uninstall();
-        const int virtualResult = Uninstall();
-        RegDeleteTreeW(HKEY_LOCAL_MACHINE, L"Software\\HXAudio");
-        RegDeleteTreeW(HKEY_CURRENT_USER, L"Software\\HXAudio");
-        if (apoResult != 0) return apoResult;
-        return virtualResult;
+        return HXAudioSafety::Purge(
+            [] { return HXAudioApoManager::Uninstall(); },
+            [] { return Uninstall(); },
+            [] {
+                // Backups and settings are retained deliberately: deleting
+                // across hives is not atomic and recovery data must survive.
+                std::wcout << L"Audio backends cleaned; HXAudio settings and recovery backups retained.";
+                return 0;
+            });
     }
     if (argc >= 2 && _wcsicmp(argv[1], L"recover") == 0) return Uninstall();
     if (argc >= 2 && _wcsicmp(argv[1], L"policy") == 0) return PolicyStatus();

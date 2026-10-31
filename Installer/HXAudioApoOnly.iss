@@ -71,7 +71,7 @@ Type: files; Name: "{group}\卸载 HXAudio Desktop.lnk"
 Type: filesandordirs; Name: "{app}"
 
 [Registry]
-Root: HKLM64; Subkey: "Software\HXAudio\VirtualAudio"; Flags: uninsdeletekey; Permissions: users-modify
+Root: HKLM64; Subkey: "Software\HXAudio\VirtualAudio"; Permissions: users-modify
 Root: HKLM64; Subkey: "Software\HXAudio\VirtualAudio\DspNotify"; ValueType: dword; ValueName: "Generation"; ValueData: "0"; Permissions: users-modify
 Root: HKLM64; Subkey: "Software\HXAudio\Apo\RuntimeStatus"; Permissions: users-modify
 
@@ -216,6 +216,7 @@ var
 begin
   if (CurUninstallStep <> usUninstall) or UninstallBackendCleaned then Exit;
 
+  try
   ControlPanel := ExpandConstant('{app}\HXAudioControl.exe');
   SetupHelper := ExpandConstant('{app}\HXAudioDriverSetup.exe');
   RunUninstallChecked(ControlPanel, '--stop', '停止 HXAudio 音频路由');
@@ -224,10 +225,11 @@ begin
     '恢复 Windows 音频引擎的原始动态处理');
   RunUninstallChecked(SetupHelper, 'apo-uninstall',
     '恢复各音频设备原有的 Windows 效果链');
-  RunUninstallChecked(SetupHelper, 'prepare-apo-install',
-    '清理残留的 HXAudio 虚拟音频后端');
   RunUninstallChecked(SetupHelper, 'purge', '清理 HXAudio 系统配置');
-  RegDeleteKeyIncludingSubkeys(HKCU, 'Software\HXAudio');
   RemoveLegacyCertificate();
   UninstallBackendCleaned := True;
+  except
+    Log('Uninstall aborted: ' + GetExceptionMessage);
+    Abort;
+  end;
 end;

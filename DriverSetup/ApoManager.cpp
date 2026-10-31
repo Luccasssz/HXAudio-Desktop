@@ -1,4 +1,5 @@
 #include "ApoManager.h"
+#include "SafetyLogic.h"
 #include "../Apo/HXAudioApoProbe.h"
 #include "../Shared/HXAudioDspHeadroom.h"
 
@@ -1492,7 +1493,8 @@ namespace HXAudioApoManager
                     }
                     changed = true;
                 }
-                DeleteApoComponentBackup(backup.keyName);
+                // Keep each original backup until the entire transaction has
+                // completed; deleting per item loses recovery on later failure.
             }
             return ok;
         }
@@ -2834,13 +2836,14 @@ namespace HXAudioApoManager
         int StopServiceOnly()
         {
             SC_HANDLE manager = OpenSCManagerW(nullptr, nullptr, SC_MANAGER_CONNECT);
-            if (!manager) return 0;
+            if (!manager) return 55;
             SC_HANDLE service = OpenServiceW(manager, kServiceName,
                 SERVICE_QUERY_STATUS | SERVICE_STOP);
             if (!service)
             {
+                const DWORD error = GetLastError();
                 CloseServiceHandle(manager);
-                return 0;
+                return error == ERROR_SERVICE_DOES_NOT_EXIST ? 0 : 55;
             }
             SERVICE_STATUS status{};
             const bool requested = ControlService(service, SERVICE_CONTROL_STOP, &status) ||
@@ -2974,13 +2977,14 @@ namespace HXAudioApoManager
         int RemoveService()
         {
             SC_HANDLE manager = OpenSCManagerW(nullptr, nullptr, SC_MANAGER_CONNECT);
-            if (!manager) return 0;
+            if (!manager) return 55;
             SC_HANDLE service = OpenServiceW(manager, kServiceName,
                 SERVICE_QUERY_STATUS | SERVICE_STOP | DELETE);
             if (!service)
             {
+                const DWORD error = GetLastError();
                 CloseServiceHandle(manager);
-                return 0;
+                return error == ERROR_SERVICE_DOES_NOT_EXIST ? 0 : 55;
             }
             SERVICE_STATUS status{};
             if (ControlService(service, SERVICE_CONTROL_STOP, &status) ||
@@ -3174,10 +3178,12 @@ namespace HXAudioApoManager
     {
         const std::wstring dll = ReadString(HKEY_LOCAL_MACHINE, kApoPath, L"DllPath");
         HKEY apoKey = nullptr;
-        const bool apoStateExists = !dll.empty() ||
-            RegOpenKeyExW(HKEY_LOCAL_MACHINE, kApoPath, 0,
+        const bool apoKeyExists = RegOpenKeyExW(HKEY_LOCAL_MACHINE, kApoPath, 0,
                 KEY_READ | KEY_WOW64_64KEY, &apoKey) == ERROR_SUCCESS;
-        if (apoKey) RegCloseKey(apoKey);
+        const bool apoStateExists = !dll.empty() || apoKeyExists;
+        DWORD cleanupComplete = 0;
+        if (apoKey) { QueryDword(apoKey, L"CleanupComplete", cleanupComplete); RegCloseKey(apoKey); }
+        if (cleanupComplete == 1 && dll.empty()) return 0;
 
         if (apoStateExists)
         {
@@ -3191,10 +3197,21 @@ namespace HXAudioApoManager
                 restoreResult = WaitForOperation(baseline, kGuardStopped, 90000);
             if (restoreResult != 0) return restoreResult;
         }
-        RemoveService();
-        if (!dll.empty()) CallDllExport(dll, "DllUnregisterServer");
-        if (!dll.empty()) DeleteUnusedApoDlls(dll, L"");
-        RegDeleteTreeW(HKEY_LOCAL_MACHINE, kApoPath);
+        const int removeResult = RemoveService();
+        if (removeResult != 0) return removeResult;
+        if (!dll.empty() && FAILED(CallDllExport(dll, "DllUnregisterServer"))) return 41;
+        // Retain endpoint and component backups, including on partial failures.
+        if (apoStateExists) {
+            HKEY key = nullptr;
+            if (RegOpenKeyExW(HKEY_LOCAL_MACHINE, kApoPath, 0,
+                KEY_SET_VALUE | KEY_WOW64_64KEY, &key) != ERROR_SUCCESS) return 43;
+            if (!SetDword(key, L"CleanupComplete", 1)) { RegCloseKey(key); return 43; }
+            const LONG removed = RegDeleteValueW(key, L"DllPath");
+            if (removed != ERROR_SUCCESS && removed != ERROR_FILE_NOT_FOUND) {
+                RegDeleteValueW(key, L"CleanupComplete"); RegCloseKey(key); return 43;
+            }
+            RegCloseKey(key);
+        }
         HKEY settings = nullptr;
         if (RegOpenKeyExW(HKEY_LOCAL_MACHINE, kSettingsPath, 0,
             KEY_SET_VALUE | KEY_WOW64_64KEY, &settings) == ERROR_SUCCESS)
@@ -3771,6 +3788,27 @@ namespace HXAudioApoManager
                     association == associationValues[i < 4 ? 0 : i == 4 ? 1 : 2];
             }
             if (!ok) result = 96;
+
+            // Fault-injected purge transaction using actual disposable HKCU
+            // backup values and the same sequencing helper as the CLI.
+            ok = SetRegistryStringValue(backup, L"RecoverySentinel", L"OEM original");
+            int virtualCalls = 0, finalizeCalls = 0;
+            int purgeResult = HXAudioSafety::Purge([] { return 56; },
+                [&] { ++virtualCalls; return 0; }, [&] { ++finalizeCalls; return 0; });
+            std::wstring sentinel;
+            ok = ok && purgeResult == 56 && virtualCalls == 0 && finalizeCalls == 0 &&
+                QueryRegistryStringValue(backup, L"RecoverySentinel", sentinel) && sentinel == L"OEM original";
+            purgeResult = HXAudioSafety::Purge([] { return 0; },
+                [&] { ++virtualCalls; return 8; }, [&] { ++finalizeCalls; return 0; });
+            ok = ok && purgeResult == 8 && virtualCalls == 1 && finalizeCalls == 0 &&
+                QueryRegistryStringValue(backup, L"RecoverySentinel", sentinel) && sentinel == L"OEM original";
+            for (int retry = 0; retry < 2; ++retry) {
+                purgeResult = HXAudioSafety::Purge([] { return 0; }, [] { return 0; },
+                    [&] { ++finalizeCalls; return 0; });
+                ok = ok && purgeResult == 0 && QueryRegistryStringValue(backup, L"RecoverySentinel", sentinel) &&
+                    sentinel == L"OEM original";
+            }
+            if (!ok || finalizeCalls != 2) result = 97;
         }
         // Exercise the real install entrypoint's earliest failure without
         // privileges or audio changes, redirecting HKLM to this disposable HKCU
@@ -3806,7 +3844,7 @@ namespace HXAudioApoManager
         if (fx) RegCloseKey(fx);
         RegCloseKey(root);
         if (RegDeleteTreeW(HKEY_CURRENT_USER, path.c_str()) != ERROR_SUCCESS && !result) result = 85;
-        if (!result) std::wcout << L"64 masks, isolated transaction, audited Realtek rebuild fixture, and fail-closed checks passed.\n";
+        if (!result) std::wcout << L"64 masks, Realtek rebuild, fail-closed, and purge fault tests passed.\n";
         return result;
     }
 
