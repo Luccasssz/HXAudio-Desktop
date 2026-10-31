@@ -90,6 +90,20 @@ jobs:
           if errorlevel 1 exit /b 1
           type hxaudio-safety-tests.log
 
+      - name: Compile Inno script only (never run installer)
+        shell: pwsh
+        run: |
+          & nuget install Tools.InnoSetup -Version 7.1.0 -OutputDirectory ci-tools -Source https://api.nuget.org/v3/index.json -NonInteractive
+          if ($LASTEXITCODE -ne 0) { throw 'Inno compiler restore failed' }
+          $iscc = Get-ChildItem ci-tools/Tools.InnoSetup.7.1.0 -Recurse -Filter ISCC.exe | Select-Object -First 1 -ExpandProperty FullName
+          if (-not $iscc) { throw 'Inno compiler not found' }
+          New-Item -ItemType Directory -Force artifacts/apo-staging | Out-Null
+          Copy-Item ControlPanel/x64/Release/HXAudioControl.exe,DriverSetup/x64/Release/HXAudioDriverSetup.exe,Apo/x64/Release/HXAudioApo.dll artifacts/apo-staging/
+          & $iscc /DMyAppVersion=0.0.0-ci /DMyApoFileName=HXAudioApo.dll Installer/HXAudioApoOnly.iss 2>&1 | Tee-Object hxaudio-inno-compile.log
+          $isccExit = $LASTEXITCODE
+          Get-ChildItem artifacts -Filter '*.exe' -File | Remove-Item -Force
+          if ($isccExit -ne 0) { throw "Inno compilation failed: $isccExit" }
+
       - name: Upload offline build evidence (unsigned, NOT for installation)
         if: always()
         uses: actions/upload-artifact@v4
