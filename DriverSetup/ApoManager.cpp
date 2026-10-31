@@ -2987,9 +2987,11 @@ namespace HXAudioApoManager
                 return error == ERROR_SERVICE_DOES_NOT_EXIST ? 0 : 55;
             }
             SERVICE_STATUS status{};
-            if (ControlService(service, SERVICE_CONTROL_STOP, &status) ||
-                GetLastError() == ERROR_SERVICE_NOT_ACTIVE)
-                WaitForService(service, SERVICE_STOPPED, 15000);
+            const bool requested = ControlService(service, SERVICE_CONTROL_STOP, &status) ||
+                GetLastError() == ERROR_SERVICE_NOT_ACTIVE;
+            if (!requested || !WaitForService(service, SERVICE_STOPPED, 15000)) {
+                CloseServiceHandle(service); CloseServiceHandle(manager); return 55;
+            }
             const bool removed = DeleteService(service) ||
                 GetLastError() == ERROR_SERVICE_MARKED_FOR_DELETE;
             CloseServiceHandle(service);
