@@ -21,7 +21,7 @@ inline int RunBridgeRealtimeTests() {
         for (UINT32 start=0;start<rate*2;start+=127) {
             if ((start/127)%3==0) {
                 const int phase=(start/127)%12;
-                p.amount=phase<6?strength:0; p.enabled=phase%2==0; p.smallSpeaker=phase%4==0;
+                p.amount=phase<6?strength:0; p.enabled=phase%2==0; p.smallSpeaker=phase%4==0; p.cleanBass=phase%3==0;
                 p.gainDb=phase<6?-6:-18;
                 p.frequencyHz=phase<6?60:140; p.peqGainDb=phase<6?6:-6; p.q=phase<6?0.7:2;
                 p.revision=++revision;
@@ -116,7 +116,7 @@ inline int RunBridgeRealtimeTests() {
         std::thread producer([&] {
             for (uint64_t i=1;i<=100000;++i) {
                 Parameters p; p.gainDb=-double(i%25); p.amount=double(i%101)/100;
-                p.enabled=i%2!=0; p.smallSpeaker=i%3!=0; p.frequencyHz=20+double(i%19981);
+                p.enabled=i%2!=0; p.smallSpeaker=i%3!=0; p.cleanBass=i%4==0; p.frequencyHz=20+double(i%19981);
                 p.peqGainDb=double(i%25)-12; p.q=0.1+double(i%100)/10; p.revision=i;
                 if (!c.requests.Push(p)) ++full;
             }
@@ -139,6 +139,27 @@ inline int RunBridgeRealtimeTests() {
         producer.join();
         if (!check(!failed && last==100001 && !d.CurrentStatus().transitioning,"concurrent convergence/integrity")) return 10;
         log<<"concurrent snapshots=100001 processedBlocks="<<received<<" queueFull="<<full<<" final="<<last<<'\n';
+    }
+    // The experimental clean toggle must not affect the original/legacy path
+    // whenever the small-speaker mode itself is disabled.
+    {
+        Parameters p; p.enabled=true; p.amount=0.5; p.smallSpeaker=false;
+        Processor reference, test;
+        reference.Configure(48000,2,p);
+        p.cleanBass=true;
+        test.Configure(48000,2,p);
+        for (int n=0;n<1200;++n) {
+            std::array<float,256> a{}, b{};
+            for (int i=0;i<128;++i) {
+                const double t=(n*128+i)/48000.0;
+                a[i*2]=static_cast<float>(0.3*std::sin(2*pi*53*t));
+                a[i*2+1]=static_cast<float>(0.3*std::sin(2*pi*91*t));
+            }
+            b=a;
+            reference.Process(a.data(),128);
+            test.Process(b.data(),128);
+            if (!check(a==b,"clean-mode flag transparent outside small-speaker mode")) return 20;
+        }
     }
     log<<"PASS "<<cases<<" realtime sweeps; 20ms ramps; full-range PEQ; 100001 concurrent snapshots. Synthetic audio only, no WASAPI listening claim.\n";
     return 0;
