@@ -21,7 +21,7 @@ inline int RunBridgeRealtimeTests() {
         for (UINT32 start=0;start<rate*2;start+=127) {
             if ((start/127)%3==0) {
                 const int phase=(start/127)%12;
-                p.amount=phase<6?strength:0; p.enabled=phase%2==0; p.smallSpeaker=phase%4==0; p.cleanBass=phase%3==0;
+                p.amount=phase<6?strength:0; p.enabled=phase%2==0; p.smallSpeaker=phase%4==0; p.cleanBass=phase%3==0; p.punchDb=phase%2?6:0;
                 p.gainDb=phase<6?-6:-18;
                 p.frequencyHz=phase<6?60:140; p.peqGainDb=phase<6?6:-6; p.q=phase<6?0.7:2;
                 p.revision=++revision;
@@ -116,7 +116,7 @@ inline int RunBridgeRealtimeTests() {
         std::thread producer([&] {
             for (uint64_t i=1;i<=100000;++i) {
                 Parameters p; p.gainDb=-double(i%25); p.amount=double(i%101)/100;
-                p.enabled=i%2!=0; p.smallSpeaker=i%3!=0; p.cleanBass=i%4==0; p.frequencyHz=20+double(i%19981);
+                p.enabled=i%2!=0; p.smallSpeaker=i%3!=0; p.cleanBass=i%4==0; p.punchDb=double(i%7); p.frequencyHz=20+double(i%19981);
                 p.peqGainDb=double(i%25)-12; p.q=0.1+double(i%100)/10; p.revision=i;
                 if (!c.requests.Push(p)) ++full;
             }
@@ -147,6 +147,7 @@ inline int RunBridgeRealtimeTests() {
         Processor reference, test;
         reference.Configure(48000,2,p);
         p.cleanBass=true;
+        p.punchDb=6;
         test.Configure(48000,2,p);
         for (int n=0;n<1200;++n) {
             std::array<float,256> a{}, b{};
