@@ -123,6 +123,46 @@ increment is not by itself an audible fault. Render missing-data callbacks can
 also occur when the source is silent/stopped. Neither count is labeled as DSP
 clipping, nor treated as proof of a persistent hardware fault.
 
+## Experimental cleaner bass (multiband A/B)
+
+The original small-speaker optimization remains fully intact and is the
+default when the new **清晰低频试验** checkbox is unchecked. The checkbox is
+only audible with Virtual Bass enabled and Small Speaker Optimization checked.
+It crossfades between the two continuously warmed synthesis banks over ~20 ms,
+so listening tests need not stop or reopen the Voicemeeter/WASAPI session.
+The old bass generator and its tested 50% setting are unchanged.
+
+This separate experiment is motivated by user feedback that the first
+small-speaker mode sounds full but somewhat cluttered on music. A single
+broadband nonlinear waveshaper creates not only intended harmonic partials
+but also new sum/difference frequencies when multiple bass notes overlap.
+An experimentally split 3-band generator (approximately 32–58, 52–88,
+78–120 Hz, with overlapping IIR transitions) uses an independent envelope
+and nonlinear excitation per band. It places less emphasis on even
+harmonics and limits the added wet band to approximately 110–350 Hz.
+The original low frequencies are retained. This is a lightweight
+multiband *experiment*, not a pitch-tracking or phase-vocoder system.
+
+Synthetic diagnostics in `bridge-clean-bass.log` and
+`bridge-clean-bass-spectrum.csv` compare the two existing small-speaker
+algorithms on two simultaneous bass tones, reporting target-band harmonic
+energy and unwanted intermodulation relative to target harmonic power.
+A weaker output does not count as an improvement on its own: tests also
+enforce a minimum retained target-band energy and fundamental level.
+Additional samples in `clean-bass-ab` are equal-RMS WAVs processed through
+the actual C++ implementation. Keep all other sound processing disabled
+when playing pre-processed test WAVs.
+
+**Do not assume the new mode sounds better because its numerical IMD metric
+is smaller.** Its harmonic balance is different and the perceived bass may
+be less full on some recordings. Compare the same track at 50% bass,
+0 dB PEQ, unchanged system/output volume and with the compensated
+loudness matched as closely as possible. Switch only the clean checkbox.
+Listen for kick/bass separation, unwanted ringing or rough midbass,
+and retention of punch. If it sounds weaker or worse, switch back.
+
+This experiment changes no APO, driver, installer logic or WASAPI route.
+
 ## Experimental small-speaker psychoacoustic mode
 
 The original mode remains the default and is unchanged. Enable Virtual Bass,
