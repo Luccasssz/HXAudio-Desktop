@@ -3564,6 +3564,31 @@ namespace HXAudioApoManager
 
     // Uses only a private, volatile HKCU key. Never enumerates real endpoints,
     // installs an APO, controls services, or opens MMDevices.
+    int DiagnosticExport()
+    {
+        HKEY key = nullptr;
+        const LONG status = RegOpenKeyExW(HKEY_LOCAL_MACHINE, kSettingsPath, 0,
+            KEY_QUERY_VALUE | KEY_WOW64_64KEY, &key);
+        if (status == ERROR_FILE_NOT_FOUND) { std::wcout << L"HXAudio settings not present.\n"; return 0; }
+        if (status != ERROR_SUCCESS) { std::wcerr << L"Diagnostic read failed: " << status << std::endl; return 98; }
+        const wchar_t* fields[] = { L"ApoInstallFailureValid", L"ApoInstallFailureExitCode",
+            L"ApoInstallFailureWin32Known", L"ApoInstallFailureRollbackStatus",
+            L"ApoInstallFailureRollbackCode", L"ApoInstallFailureError", L"ApoInstallFailureStage",
+            L"ApoInstallFailureMask", L"ApoGuardState", L"ApoLastError", L"ApoFailureStage", L"ApoVerifyFailureMask" };
+        for (const auto* name : fields) {
+            DWORD value = 0;
+            if (QueryDword(key, name, value)) std::wcout << name << L"=" << value << L"\n";
+            else std::wcout << name << L"=<missing-or-invalid>\n";
+        }
+        for (const auto* name : { L"ApoInstallFailurePhase", L"ApoInstallFailureEndpoint", L"ApoFailureEndpoint" }) {
+            std::wstring value;
+            if (QueryRegistryStringValue(key, name, value)) std::wcout << name << L"=" << value << L"\n";
+            else std::wcout << name << L"=<missing-or-invalid>\n";
+        }
+        RegCloseKey(key);
+        return 0;
+    }
+
     int DiagnosticSelfTest()
     {
         const std::wstring path = L"Software\\HXAudioDiagnosticTest_" +
@@ -3830,6 +3855,10 @@ namespace HXAudioApoManager
                 auto* oldBuffer = std::wcerr.rdbuf(captured.rdbuf());
                 const int installExit = InstallWithMode(nullptr, L"APO", L"APO-Installing");
                 std::wcerr.rdbuf(oldBuffer);
+                std::wostringstream exported;
+                auto* oldOutput = std::wcout.rdbuf(exported.rdbuf());
+                const int exportExit = DiagnosticExport();
+                std::wcout.rdbuf(oldOutput);
                 const LONG resetResult = RegOverridePredefKey(HKEY_LOCAL_MACHINE, nullptr);
                 DWORD validInstall = 0, recordedExit = 0, knownWin32 = 1;
                 std::wstring phase;
@@ -3839,6 +3868,7 @@ namespace HXAudioApoManager
                     QueryRegistryStringValue(fakeSettings, L"ApoInstallFailurePhase", phase);
                 if ((resetResult != ERROR_SUCCESS || installExit != 40 || !recorded ||
                     validInstall != 1 || recordedExit != 40 || knownWin32 != 0 || phase != L"validate-path" ||
+                    exportExit != 0 || exported.str().find(L"ApoInstallFailureExitCode=40") == std::wstring::npos ||
                     captured.str().find(L"exit=40") == std::wstring::npos) && !result) result = 95;
             }
             RegCloseKey(fakeSettings);

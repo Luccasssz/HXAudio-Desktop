@@ -763,6 +763,8 @@ int wmain(int argc, wchar_t** argv)
         return HXAudioEngineBypass::RunServiceDispatcher();
     if (argc >= 2 && _wcsicmp(argv[1], L"engine-bypass-probe") == 0)
         return HXAudioEngineBypass::Probe();
+    if (argc >= 2 && _wcsicmp(argv[1], L"apo-diagnostic-export") == 0)
+        return HXAudioApoManager::DiagnosticExport();
     if (argc >= 2 && _wcsicmp(argv[1], L"apo-diagnostic-self-test") == 0)
         return HXAudioApoManager::DiagnosticSelfTest();
     if (argc >= 3 && _wcsicmp(argv[1], L"apo-self-test") == 0)
