@@ -12,6 +12,7 @@ HWND sourceBox = nullptr, targetBox = nullptr, statusText = nullptr;
 std::vector<DeviceInfo> sources, targets;
 HANDLE worker = nullptr, stop = nullptr;
 std::atomic<long> state{0}, failure{0}, inputPeak{0}, outputPeak{0};
+bool failureNotified = false;
 struct Config { std::wstring source, target; DspSettings dsp; DWORD buffer = 10; } config;
 
 std::wstring Lower(std::wstring s) {
@@ -106,21 +107,26 @@ HRESULT RunSession(const Config& c, HANDLE stopEvent) {
     if (SUCCEEDED(hr)) hr = client->GetService(IID_PPV_ARGS(&capture));
     if (SUCCEEDED(hr)) hr = client->Start();
     if (SUCCEEDED(hr)) state.store(2);
-    std::vector<float> samples;
+    std::vector<float> samples; ULONGLONG lastPacket = GetTickCount64(), nextStateCheck = 0;
     while (SUCCEEDED(hr) && WaitForSingleObject(stopEvent, 0) != WAIT_OBJECT_0) {
         HANDLE events[] = {stopEvent, failedEvent, captureEvent};
         const DWORD wait = WaitForMultipleObjects(eventDriven ? 3 : 2, events, FALSE, eventDriven ? 500 : std::max<DWORD>(1, c.buffer / 2));
         if (wait == WAIT_OBJECT_0) break;
         if (wait == WAIT_OBJECT_0 + 1) { hr = AUDCLNT_E_DEVICE_INVALIDATED; break; }
         if (wait != WAIT_TIMEOUT && (!eventDriven || wait != WAIT_OBJECT_0 + 2)) { hr = E_FAIL; break; }
-        DWORD ss = 0, ts = 0;
-        if (FAILED(source->GetState(&ss)) || FAILED(target->GetState(&ts)) || ss != DEVICE_STATE_ACTIVE || ts != DEVICE_STATE_ACTIVE) { hr = AUDCLNT_E_DEVICE_INVALIDATED; break; }
+        if (GetTickCount64() >= nextStateCheck) {
+            DWORD ss = 0, ts = 0;
+            if (FAILED(source->GetState(&ss)) || FAILED(target->GetState(&ts)) || ss != DEVICE_STATE_ACTIVE || ts != DEVICE_STATE_ACTIVE) { hr = AUDCLNT_E_DEVICE_INVALIDATED; break; }
+            nextStateCheck = GetTickCount64() + 500;
+        }
         UINT32 packet = 0; hr = capture->GetNextPacketSize(&packet);
+        if (packet == 0 && GetTickCount64() - lastPacket > 1000) { inputPeak.store(0); outputPeak.store(0); }
         while (SUCCEEDED(hr) && packet) {
             BYTE* data = nullptr; UINT32 frames = 0; DWORD flags = 0;
             hr = capture->GetBuffer(&data, &frames, &flags, nullptr, nullptr); if (FAILED(hr)) break;
             bool converted = ConvertToFloatBus((flags & AUDCLNT_BUFFERFLAGS_SILENT) ? nullptr : data, frames, fmt, samples);
             if (converted) {
+                lastPacket = GetTickCount64();
                 inputPeak.store(FloatPeakQ31(samples)); dsp.Process(samples.data(), frames);
                 for (auto& sample : samples) sample = std::isfinite(sample) ? std::clamp(sample, -1.0f, 1.0f) : 0.0f;
                 outputPeak.store(FloatPeakQ31(samples)); output->Push(samples.data(), frames);
@@ -152,6 +158,7 @@ bool Number(HWND w, int id, double minimum, double maximum, double& value) {
 }
 void Start(HWND w) {
     if (worker) return;
+    if (RouterProcessIsRunning()) { MessageBoxW(w,L"检测到旧版 HXAudio 路由器正在运行。请先关闭它，避免重复播放。",L"HXAudio Bridge",MB_ICONWARNING); return; }
     const LRESULT a = SendMessageW(sourceBox, CB_GETCURSEL, 0, 0), b = SendMessageW(targetBox, CB_GETCURSEL, 0, 0);
     if (a < 0 || b < 0 || static_cast<size_t>(a) >= sources.size() || static_cast<size_t>(b) >= targets.size()) { MessageBoxW(w, L"请选择 Voicemeeter 输入和物理输出。", L"HXAudio Bridge", MB_ICONWARNING); return; }
     Config next; next.source = sources[a].id; next.target = targets[b].id;
@@ -160,12 +167,13 @@ void Start(HWND w) {
         !Number(w,kFreq,20,20000,hz) || !Number(w,kPeqGain,-12,12,peq) || !Number(w,kQ,0.1,10,q) || !Number(w,kBuffer,5,100,buffer)) {
         MessageBoxW(w,L"检查设备和参数：增益 -24 至 0 dB，频率 20–20000 Hz，PEQ ±12 dB，Q 0.1–10，缓冲 5–100 ms。",L"HXAudio Bridge",MB_ICONWARNING); return;
     }
+    if (MessageBoxW(w,L"请确认 Voicemeeter 中通往物理输出的直通总线已关闭，且输出不会重新进入该输入。否则可能重复播放或反馈。确认后开始？",L"开始前检查",MB_YESNO|MB_ICONWARNING) != IDYES) return;
     next.dsp.preampDb = gain; next.dsp.virtualBassEnabled = SendDlgItemMessageW(w,kBass,BM_GETCHECK,0,0) == BST_CHECKED;
     next.dsp.virtualBassAmount = next.dsp.virtualBassEnabled ? 0.5 : 0;
     next.dsp.peqBands.push_back({true,PeqFilterType::Peak,hz,peq,q}); next.buffer = static_cast<DWORD>(buffer);
     config = std::move(next); stop = CreateEventW(nullptr, TRUE, FALSE, nullptr);
     if (!stop) { state.store(3); failure.store(E_OUTOFMEMORY); return; }
-    state.store(1); inputPeak.store(0); outputPeak.store(0); failure.store(0);
+    state.store(1); inputPeak.store(0); outputPeak.store(0); failure.store(0); failureNotified = false;
     worker = CreateThread(nullptr,0,Thread,nullptr,0,nullptr);
     if (!worker) { CloseHandle(stop); stop = nullptr; state.store(3); failure.store(E_FAIL); }
 }
@@ -195,7 +203,7 @@ LRESULT CALLBACK Proc(HWND w, UINT msg, WPARAM wp, LPARAM lp) {
     case WM_TIMER: {
         const long s=state.load(); if (s==2) { wchar_t text[200]{}; swprintf_s(text,L"运行中：输入峰值 %.1f%%，处理后 %.1f%%。",inputPeak.load()*100.0/2147483647.0,outputPeak.load()*100.0/2147483647.0); SetWindowTextW(statusText,text); }
         else if (s==1) SetWindowTextW(statusText,L"正在连接设备…");
-        else if (s==3) { wchar_t text[240]{}; swprintf_s(text,L"桥接已停止（0x%08lX）。检查设备，刷新后手动重试；请切回系统输出。",static_cast<unsigned long>(failure.load())); SetWindowTextW(statusText,text); if (worker && WaitForSingleObject(worker,0)==WAIT_OBJECT_0) Stop(); }
+        else if (s==3) { wchar_t text[240]{}; swprintf_s(text,L"桥接已停止（0x%08lX）。检查设备，刷新后手动重试；请切回系统输出。",static_cast<unsigned long>(failure.load())); SetWindowTextW(statusText,text); if (worker && WaitForSingleObject(worker,0)==WAIT_OBJECT_0) Stop(); if (!failureNotified) { failureNotified = true; MessageBoxW(w,text,L"HXAudio Bridge 已断开",MB_OK|MB_ICONWARNING); } }
         return 0;
     }
     case WM_CLOSE: Stop(); DestroyWindow(w); return 0;

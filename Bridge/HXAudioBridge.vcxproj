@@ -10,7 +10,6 @@
   <PropertyGroup><OutDir>$(MSBuildProjectDirectory)\x64\Release\</OutDir><IntDir>$(MSBuildProjectDirectory)\x64\Release\obj\</IntDir><TargetName>HXAudioBridge</TargetName></PropertyGroup>
   <ItemDefinitionGroup><ClCompile><LanguageStandard>stdcpp17</LanguageStandard><WarningLevel>Level4</WarningLevel><AdditionalOptions>/utf-8 %(AdditionalOptions)</AdditionalOptions><PreprocessorDefinitions>UNICODE;_UNICODE;WIN32_LEAN_AND_MEAN;NOMINMAX;%(PreprocessorDefinitions)</PreprocessorDefinitions></ClCompile><Link><SubSystem>Windows</SubSystem><AdditionalDependencies>ole32.lib;uuid.lib;propsys.lib;comctl32.lib;shell32.lib;advapi32.lib;avrt.lib;setupapi.lib;cfgmgr32.lib;%(AdditionalDependencies)</AdditionalDependencies></Link></ItemDefinitionGroup>
   <ItemGroup><ClCompile Include="HXAudioBridge.cpp" /></ItemGroup>
-  <ItemGroup><ResourceCompile Include="..\ControlPanel\HXAudioControl.rc" /></ItemGroup>
   <ItemGroup><ClInclude Include="..\ControlPanel\resource.h" /></ItemGroup>
   <ItemGroup><Manifest Include="..\ControlPanel\HXAudioControl.manifest" /></ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
