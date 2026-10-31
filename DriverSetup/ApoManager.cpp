@@ -2264,6 +2264,10 @@ namespace HXAudioApoManager
                     if (ValueContainsApo(fx, value.name)) { RegCloseKey(fx); return ERROR_NOT_FOUND; }
                 }
             }
+            // Legacy schemas have no authenticated post-install state or
+            // driver identity. Never replay their snapshots over live OEM data.
+            // Keep the backup and require a separately reviewed recovery.
+            if (hasBackup) { RegCloseKey(backup); RegCloseKey(fx); return ERROR_REVISION_MISMATCH; }
             bool ok = true;
             bool restoredCompleteSchema = false;
             if (hasBackup && QueryDword(backup, L"Complete", complete) && complete == 1)
@@ -3904,6 +3908,14 @@ namespace HXAudioApoManager
                     bool changedOnBadBackup = false; DWORD badBackupStage = 0;
                     fakeRecoveryOk = fakeRecoveryOk && RestoreEndpoint(root, L"endpoint", changedOnBadBackup,
                         badBackupStage) == ERROR_INVALID_DATA && !changedOnBadBackup;
+                    if (RegOpenKeyExW(root, L"Software\\HXAudio\\Apo\\Backup\\endpoint", 0,
+                        KEY_SET_VALUE, &fakeBackup) == ERROR_SUCCESS) {
+                        fakeRecoveryOk = fakeRecoveryOk && SetDword(fakeBackup, L"Complete", 1) &&
+                            SetDword(fakeBackup, L"SchemaVersion", 7);
+                        RegCloseKey(fakeBackup);
+                        fakeRecoveryOk = fakeRecoveryOk && RestoreEndpoint(root, L"endpoint", changedOnBadBackup,
+                            badBackupStage) == ERROR_REVISION_MISMATCH && !changedOnBadBackup;
+                    } else fakeRecoveryOk = false;
                 }
                 const LONG resetResult = RegOverridePredefKey(HKEY_LOCAL_MACHINE, nullptr);
                 DWORD validInstall = 0, recordedExit = 0, knownWin32 = 1;
