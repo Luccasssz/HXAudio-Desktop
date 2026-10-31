@@ -1791,7 +1791,13 @@ namespace HXAudioApoManager
             bool& changed, DWORD& stage)
         {
             changed = false;
-            stage = kStageOpenFxProperties;
+            // The legacy writer removes other effect slots and component
+            // associations. Do not touch even an apparently empty endpoint:
+            // safe OEM coexistence has not been implemented.
+            (void)renderRoot; (void)endpoint;
+            stage = kStageExternalAssociations;
+            return ERROR_NOT_SUPPORTED;
+#if 0
             HKEY fx = nullptr;
             LONG result = OpenEndpointFx(renderRoot, endpoint,
                 KEY_QUERY_VALUE | KEY_SET_VALUE, true, &fx, &stage);
@@ -2021,6 +2027,9 @@ namespace HXAudioApoManager
             RegCloseKey(backup);
             RegCloseKey(fx);
             return exclusive ? ERROR_SUCCESS : ERROR_INVALID_DATA;
+        }
+
+#endif
         }
 
         DWORD VerifyEndpoint(HKEY renderRoot, const std::wstring& endpoint,
@@ -2550,6 +2559,12 @@ namespace HXAudioApoManager
         {
             WriteGuardStatus(kGuardWorking, ERROR_IO_PENDING, nullptr, false);
             EndpointSummary summary{};
+            summary.failed = 1;
+            summary.firstError = ERROR_NOT_SUPPORTED;
+            summary.failureStage = kStageExternalAssociations;
+            WriteGuardStatus(kGuardError, ERROR_NOT_SUPPORTED, &summary, true);
+            return ERROR_NOT_SUPPORTED;
+#if 0
             DWORD error = ERROR_GEN_FAILURE;
             std::vector<EndpointVolumeSnapshot> volumeSnapshots;
             if (!CaptureEndpointVolumes(volumeSnapshots))
@@ -2626,6 +2641,9 @@ namespace HXAudioApoManager
             }
             WriteGuardStatus(kGuardError, error, &summary, true);
             return error;
+        }
+
+#endif
         }
 
         DWORD PerformRestoreOperation()
@@ -3014,6 +3032,9 @@ namespace HXAudioApoManager
             return reportFailure(40, L"validate-path");
         if (GetFileAttributesW(fullPath) == INVALID_FILE_ATTRIBUTES)
             return reportFailure(40, L"validate-file");
+        // No installation until an OEM-preserving integration is verified.
+        return reportFailure(58, L"oem-coexistence-unverified");
+#if 0
         const std::wstring oldDll = ReadString(HKEY_LOCAL_MACHINE, kApoPath, L"DllPath");
         const std::wstring oldMode = ReadString(HKEY_LOCAL_MACHINE,
             kSettingsPath, L"InstallationMode");
@@ -3132,6 +3153,9 @@ namespace HXAudioApoManager
         if (migratedSettings)
             std::wcout << L" Stored preamp/PEQ gains were migrated into the supported ranges.";
         return 0;
+    }
+
+#endif
     }
 
     int Install(const wchar_t* dllPath)
@@ -3688,6 +3712,60 @@ namespace HXAudioApoManager
                 return VerifyEndpoint(root, L"endpoint", failStage, failMask) == ERROR_SUCCESS;
             });
             if (!ok || !eventuallyApplied || runs != 3) result = 91;
+
+            // Fixture distilled from the user's Realtek snapshot. It includes
+            // each observed composite FX slot and all eight component links.
+            struct Fixture { const wchar_t* name; std::vector<std::wstring> values; };
+            const Fixture fixture[] = {
+                {kCompositeStreamValue, {L"{0EBD8605-17BB-4AE7-AD76-E86F99A425E9}"}},
+                {kCompositeModeValue, {L"{90609662-991C-4873-BA68-8FF2D57B230B}", L"{001897D5-ADD1-4C31-90FD-34B06B8E7EE4}"}},
+                {kCompositeValue, {L"{0EBD8607-17BB-4AE7-AD76-E86F99A425E9}", L"{90705486-CFCC-4D2F-9671-B62846279A2C}"}},
+                {kCompositeOffloadStreamValue, {L"{0EBD8611-17BB-4AE7-AD76-E86F99A425E9}"}},
+                {kCompositeOffloadModeValue, {L"{0EBD8612-17BB-4AE7-AD76-E86F99A425E9}", L"{90C0662B-E145-49D8-A0C1-670D079442BE}"}},
+                {kSfxProcessingModesValue, {kDefaultProcessingMode, kCommunicationsProcessingMode, kMediaProcessingMode, kMovieProcessingMode, kNotificationProcessingMode}},
+                {kMfxProcessingModesValue, {kDefaultProcessingMode, kCommunicationsProcessingMode, kMediaProcessingMode, kMovieProcessingMode}},
+                {kOffloadSfxProcessingModesValue, {kDefaultProcessingMode, kMediaProcessingMode, kMovieProcessingMode, kNotificationProcessingMode}},
+                {kOffloadMfxProcessingModesValue, {kDefaultProcessingMode, kMediaProcessingMode, kMovieProcessingMode}}
+            };
+            for (const auto& item : fixture) {
+                const auto encoded = EncodeMultiString(item.values);
+                ok = ok && RegSetValueExW(fx, item.name, 0, REG_MULTI_SZ,
+                    encoded.data(), static_cast<DWORD>(encoded.size())) == ERROR_SUCCESS;
+            }
+            const wchar_t* associations[] = {
+                L"{0ebd8605-17bb-4ae7-ad76-e86f99a425e9},100", L"{0ebd8607-17bb-4ae7-ad76-e86f99a425e9},100",
+                L"{0ebd8611-17bb-4ae7-ad76-e86f99a425e9},100", L"{0ebd8612-17bb-4ae7-ad76-e86f99a425e9},100",
+                L"{001897d5-add1-4c31-90fd-34b06b8e7ee4},100", L"{90609662-991c-4873-ba68-8ff2d57b230b},100",
+                L"{90705486-cfcc-4d2f-9671-b62846279a2c},100", L"{90c0662b-e145-49d8-a0c1-670d079442be},100"
+            };
+            for (size_t i = 0; i < ARRAYSIZE(associations); ++i)
+                ok = ok && SetRegistryStringValue(fx, associations[i], i < 4 ? L"SWD\\DRIVERENUM\\DOLBYAPO_DAX3APOSVC" :
+                    i == 4 ? L"SWD\\DRIVERENUM\\ELEVOCAPO" : L"SWD\\DRIVERENUM\\REALTEKAPO");
+            DWORD rebuiltStage = 0, rebuiltMask = 0;
+            ok = ok && VerifyEndpoint(root, L"endpoint", rebuiltStage, rebuiltMask) == ERROR_NOT_FOUND &&
+                rebuiltStage == kStageVerify && rebuiltMask == (8u | 16u | 32u);
+            const auto oldSixModes = EncodeMultiString({kDefaultProcessingMode, kCommunicationsProcessingMode,
+                kSpeechProcessingMode, kNotificationProcessingMode, kMediaProcessingMode, kMovieProcessingMode});
+            ok = ok && RegSetValueExW(fx, kEfxProcessingModesValue, 0, REG_MULTI_SZ,
+                oldSixModes.data(), static_cast<DWORD>(oldSixModes.size())) == ERROR_SUCCESS &&
+                VerifyEndpoint(root, L"endpoint", rebuiltStage, rebuiltMask) == ERROR_NOT_FOUND && rebuiltMask == (2u | 8u | 16u | 32u);
+            // Model endpoint rebuild restoring the audited DEFAULT-only value.
+            ok = ok && RegSetValueExW(fx, kEfxProcessingModesValue, 0, REG_MULTI_SZ,
+                singleMode.data(), static_cast<DWORD>(singleMode.size())) == ERROR_SUCCESS &&
+                VerifyEndpoint(root, L"endpoint", rebuiltStage, rebuiltMask) == ERROR_NOT_FOUND && rebuiltMask == (8u | 16u | 32u);
+            bool refusedChanged = true; DWORD refusedStage = 0;
+            ok = ok && ApplyEndpoint(root, L"endpoint", refusedChanged, refusedStage) == ERROR_NOT_SUPPORTED && !refusedChanged;
+            for (const auto& item : fixture) {
+                DWORD actualType = 0; std::vector<BYTE> actual;
+                ok = ok && QueryRaw(fx, item.name, actualType, actual) && actualType == REG_MULTI_SZ &&
+                    actual == EncodeMultiString(item.values);
+            }
+            for (const auto* name : associations) {
+                std::wstring association;
+                ok = ok && QueryRegistryStringValue(fx, name, association) &&
+                    StartsWithInsensitive(association, L"SWD\\DRIVERENUM\\");
+            }
+            if (!ok) result = 96;
         }
         // Exercise the real install entrypoint's earliest failure without
         // privileges or audio changes, redirecting HKLM to this disposable HKCU
@@ -3723,7 +3801,7 @@ namespace HXAudioApoManager
         if (fx) RegCloseKey(fx);
         RegCloseKey(root);
         if (RegDeleteTreeW(HKEY_CURRENT_USER, path.c_str()) != ERROR_SUCCESS && !result) result = 85;
-        if (!result) std::wcout << L"64 masks, isolated registry transaction/retry/rollback, and failure preservation passed.\n";
+        if (!result) std::wcout << L"64 masks, isolated transaction, audited Realtek rebuild fixture, and fail-closed checks passed.\n";
         return result;
     }
 

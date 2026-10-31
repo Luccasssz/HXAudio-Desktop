@@ -767,23 +767,18 @@ int wmain(int argc, wchar_t** argv)
     }
     if (argc >= 3 && _wcsicmp(argv[1], L"install") == 0) return Install(argv[2]);
     if (argc >= 2 && _wcsicmp(argv[1], L"uninstall") == 0) return Uninstall();
-    if (argc >= 3 && _wcsicmp(argv[1], L"apo-install") == 0)
+    // Refuse before PrepareApoInstall can remove the virtual backend or stop
+    // services. The legacy APO path cannot preserve OEM audio components yet.
+    if (argc >= 2 && (_wcsicmp(argv[1], L"apo-install") == 0 ||
+        _wcsicmp(argv[1], L"apo-install-effects") == 0 ||
+        _wcsicmp(argv[1], L"prepare-apo-install") == 0 ||
+        _wcsicmp(argv[1], L"apo-refresh") == 0))
     {
-        // Modes are mutually exclusive even when invoked outside the standard
-        // installer.  The transition releases audiodg first so removal never
-        // leaves a pending virtual device or a silent default endpoint.
-        const int virtualResult = PrepareApoInstall();
-        if (virtualResult != 0) return virtualResult;
-        return HXAudioApoManager::Install(argv[2]);
+        std::wcerr << L"APO installation and refresh disabled: OEM audio coexistence is unverified.";
+        return 58;
     }
-    if (argc >= 3 && _wcsicmp(argv[1], L"apo-install-effects") == 0)
-        return HXAudioApoManager::InstallForVirtualEffects(argv[2]);
-    if (argc >= 2 && _wcsicmp(argv[1], L"prepare-apo-install") == 0)
-        return PrepareApoInstall();
     if (argc >= 2 && _wcsicmp(argv[1], L"apo-uninstall") == 0)
         return HXAudioApoManager::Uninstall();
-    if (argc >= 2 && _wcsicmp(argv[1], L"apo-refresh") == 0)
-        return HXAudioApoManager::Refresh();
     if (argc >= 2 && _wcsicmp(argv[1], L"apo-status") == 0)
         return HXAudioApoManager::VerifyInstalled();
     if (argc >= 2 && _wcsicmp(argv[1], L"apo-status-effects") == 0)

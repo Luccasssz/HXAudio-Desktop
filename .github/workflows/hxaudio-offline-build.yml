@@ -71,6 +71,11 @@ jobs:
             "$name exit code: $($p.ExitCode)" | Tee-Object -FilePath hxaudio-results.log -Append
             if ($p.ExitCode -ne 0) { throw "$name failed: $($p.ExitCode)" }
           }
+          foreach ($cmd in @('prepare-apo-install', 'apo-install fake.dll', 'apo-install-effects fake.dll', 'apo-refresh')) {
+            $p = Start-Process $helper -ArgumentList $cmd -Wait -PassThru -RedirectStandardOutput 'hxaudio-gate-out.log' -RedirectStandardError 'hxaudio-gate-err.log'
+            "$cmd exit=$($p.ExitCode)" | Tee-Object -FilePath hxaudio-gate-results.log -Append
+            if ($p.ExitCode -ne 58) { throw "Fail-closed gate failed for $cmd : $($p.ExitCode)" }
+          }
           Test-Executable 'diagnostic' $helper 'apo-diagnostic-self-test'
           Test-Executable 'dsp' $control '--dsp-self-test'
           Test-Executable 'apo' $helper "apo-self-test `"$apo`""
