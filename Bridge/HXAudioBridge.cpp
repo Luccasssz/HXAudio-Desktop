@@ -7,11 +7,12 @@
 #include "../tests/virtual_bass_tests.h"
 #include "../Shared/HXAudioBridgeRealtimeDsp.h"
 #include "../tests/bridge_realtime_tests.h"
+#include "../tests/small_speaker_tests.h"
 
 namespace bridge {
 constexpr int kSource = 4101, kTarget = 4102, kRefresh = 4103, kStart = 4104,
     kStop = 4105, kGain = 4106, kBass = 4107, kFreq = 4108, kPeqGain = 4109,
-    kQ = 4110, kBuffer = 4111, kStatus = 4112, kBassAmount = 4113, kBassSlider = 4114, kGainSlider = 4115, kApplied = 4116;
+    kQ = 4110, kBuffer = 4111, kStatus = 4112, kBassAmount = 4113, kBassSlider = 4114, kGainSlider = 4115, kApplied = 4116, kSmallSpeaker = 4117;
 HWND sourceBox = nullptr, targetBox = nullptr, statusText = nullptr, appliedText = nullptr;
 std::unique_ptr<HXAudioBridgeDsp::Control> liveControl;
 HXAudioBridgeDsp::Parameters desired;
@@ -186,6 +187,7 @@ bool ReadDsp(HWND w, HXAudioBridgeDsp::Parameters& p) {
     if (!Number(w,kGain,-24,0,p.gainDb) || !Number(w,kFreq,20,20000,p.frequencyHz) ||
         !Number(w,kPeqGain,-12,12,p.peqGainDb) || !Number(w,kQ,0.1,10,p.q) ||
         !Number(w,kBassAmount,0,100,percent)) return false;
+    p.smallSpeaker=SendDlgItemMessageW(w,kSmallSpeaker,BM_GETCHECK,0,0)==BST_CHECKED;
     p.amount=percent/100; p.enabled=SendDlgItemMessageW(w,kBass,BM_GETCHECK,0,0)==BST_CHECKED;
     return HXAudioBridgeDsp::Valid(p);
 }
@@ -243,15 +245,16 @@ LRESULT CALLBACK Proc(HWND w, UINT msg, WPARAM wp, LPARAM lp) {
         Add(w,L"STATIC",L"强度 %",0,210,182,70,22); Add(w,L"EDIT",L"15",WS_BORDER|WS_TABSTOP,280,179,55,25,kBassAmount);
         HWND bassSlider=Add(w,TRACKBAR_CLASSW,L"",TBS_HORZ|TBS_AUTOTICKS|WS_TABSTOP,345,175,265,35,kBassSlider);
         SendMessageW(bassSlider,TBM_SETRANGE,TRUE,MAKELPARAM(0,100)); SendMessageW(bassSlider,TBM_SETTICFREQ,10,0); SendMessageW(bassSlider,TBM_SETPOS,TRUE,15);
-        Add(w,L"STATIC",L"PEQ Hz（实时）",0,15,225,130,22); Add(w,L"EDIT",L"1000",WS_BORDER|WS_TABSTOP,145,222,75,25,kFreq);
-        Add(w,L"STATIC",L"dB",0,235,225,30,22); Add(w,L"EDIT",L"0",WS_BORDER|WS_TABSTOP,270,222,60,25,kPeqGain);
-        Add(w,L"STATIC",L"Q",0,345,225,25,22); Add(w,L"EDIT",L"0.9",WS_BORDER|WS_TABSTOP,375,222,60,25,kQ);
-        appliedText=Add(w,L"STATIC",L"",0,15,260,610,65,kApplied);
-        Add(w,L"STATIC",L"会话参数：输入 / 物理输出 / 缓冲需停止后修改",0,15,335,470,22);
-        Add(w,L"STATIC",L"缓冲 ms",0,15,365,80,22); Add(w,L"EDIT",L"20",WS_BORDER|WS_TABSTOP,95,362,55,25,kBuffer);
-        Add(w,L"BUTTON",L"开始处理",WS_TABSTOP,175,359,120,30,kStart); Add(w,L"BUTTON",L"停止",WS_TABSTOP,310,359,100,30,kStop);
-        statusText=Add(w,L"STATIC",L"",0,15,405,610,110,kStatus);
-        Add(w,L"STATIC",L"路由提示：请在 Voicemeeter 中关闭直通物理输出，并避免输出回送输入。无法自动检测其内部路由，不能保证无反馈。停止桥接后请手动切回正常播放设备。",0,15,525,610,65);
+        Add(w,L"BUTTON",L"小扬声器优化（取消勾选 = 原模式 A/B）",BS_AUTOCHECKBOX|WS_TABSTOP,15,213,580,25,kSmallSpeaker);
+        Add(w,L"STATIC",L"PEQ Hz（实时）",0,15,255,130,22); Add(w,L"EDIT",L"1000",WS_BORDER|WS_TABSTOP,145,252,75,25,kFreq);
+        Add(w,L"STATIC",L"dB",0,235,255,30,22); Add(w,L"EDIT",L"0",WS_BORDER|WS_TABSTOP,270,252,60,25,kPeqGain);
+        Add(w,L"STATIC",L"Q",0,345,255,25,22); Add(w,L"EDIT",L"0.9",WS_BORDER|WS_TABSTOP,375,252,60,25,kQ);
+        appliedText=Add(w,L"STATIC",L"",0,15,290,610,65,kApplied);
+        Add(w,L"STATIC",L"会话参数：输入 / 物理输出 / 缓冲需停止后修改",0,15,365,470,22);
+        Add(w,L"STATIC",L"缓冲 ms",0,15,395,80,22); Add(w,L"EDIT",L"20",WS_BORDER|WS_TABSTOP,95,392,55,25,kBuffer);
+        Add(w,L"BUTTON",L"开始处理",WS_TABSTOP,175,389,120,30,kStart); Add(w,L"BUTTON",L"停止",WS_TABSTOP,310,389,100,30,kStop);
+        statusText=Add(w,L"STATIC",L"",0,15,435,610,110,kStatus);
+        Add(w,L"STATIC",L"路由提示：请在 Voicemeeter 中关闭直通物理输出，并避免输出回送输入。无法自动检测其内部路由，不能保证无反馈。停止桥接后请手动切回正常播放设备。",0,15,555,610,65);
         SetTimer(w,1,100,nullptr); Refresh(); SessionControls(w,false); UpdateLive(w); return 0;
     }
     case WM_HSCROLL: {
@@ -272,7 +275,7 @@ LRESULT CALLBACK Proc(HWND w, UINT msg, WPARAM wp, LPARAM lp) {
             (id==kGain || id==kFreq || id==kPeqGain || id==kQ || id==kBassAmount)) {
             SetTimer(w,2,60,nullptr); return 0; // debounce incomplete typing
         }
-        if (id==kBass && notification==BN_CLICKED) { UpdateLive(w); return 0; }
+        if ((id==kBass || id==kSmallSpeaker) && notification==BN_CLICKED) { UpdateLive(w); return 0; }
         switch (id) {
         case kRefresh: Refresh(); break;
         case kStart: Start(w); break;
@@ -286,7 +289,7 @@ LRESULT CALLBACK Proc(HWND w, UINT msg, WPARAM wp, LPARAM lp) {
             HXAudioBridgeDsp::Status applied;
             if (liveControl->status.Latest(applied)) {
                 wchar_t text[350]{};
-                swprintf_s(text,L"当前 DSP：前级 %.1f dB / 低频 %.1f%%（%s）\nPEQ %.1f Hz / %.1f dB / Q %.2f；%s",applied.gainDb,applied.amount*100,applied.enableMix==0?L"关闭":applied.enableMix==1?L"开启":L"切换中",applied.peqHz,applied.peqDb,applied.peqQ,applied.transitioning?L"平滑过渡中":L"已应用");
+                swprintf_s(text,L"当前 DSP：前级 %.1f dB / 低频 %.1f%%（%s）\nPEQ %.1f Hz / %.1f dB / Q %.2f；%s / %s",applied.gainDb,applied.amount*100,applied.enableMix==0?L"关闭":applied.enableMix==1?L"开启":L"切换中",applied.peqHz,applied.peqDb,applied.peqQ,applied.transitioning?L"平滑过渡中":L"已应用",applied.target.smallSpeaker?L"小扬声器":L"原模式");
                 HXAudioBridgeDsp::Parameters edited;
                 if (ReadDsp(w,edited)) SetWindowTextW(appliedText,text);
             }
@@ -336,6 +339,8 @@ int RealtimeUiTest(HWND window) {
         SendMessageW(window,WM_TIMER,2,0);
         SendDlgItemMessageW(window,kBass,BM_SETCHECK,i%2?BST_CHECKED:BST_UNCHECKED,0);
         SendMessageW(window,WM_COMMAND,MAKEWPARAM(kBass,BN_CLICKED),0);
+        SendDlgItemMessageW(window,kSmallSpeaker,BM_SETCHECK,i%2?BST_CHECKED:BST_UNCHECKED,0);
+        SendMessageW(window,WM_COMMAND,MAKEWPARAM(kSmallSpeaker,BN_CLICKED),0);
         SendMessageW(window,WM_TIMER,1,0);
     }
     SetDlgItemTextW(window,kGain,L"-6"); SetDlgItemTextW(window,kFreq,L"1000");
@@ -358,6 +363,7 @@ int RealtimeUiTest(HWND window) {
 
 int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR commandLine, int show) {
     const std::wstring args = commandLine ? commandLine : L"";
+    if (args.find(L"--small-speaker-self-test") != std::wstring::npos) return RunSmallSpeakerTests();
     if (args.find(L"--realtime-dsp-self-test") != std::wstring::npos) return RunBridgeRealtimeTests();
     if (args.find(L"--virtual-bass-self-test") != std::wstring::npos) return RunVirtualBassRegressionTests();
     if (args.find(L"--dsp-self-test") != std::wstring::npos) return RunDspSelfTest();
@@ -371,7 +377,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR commandLine, int show) 
     WNDCLASSW cls{}; cls.lpfnWndProc=bridge::Proc; cls.hInstance=instance; cls.lpszClassName=L"HXAudioVoiceMeeterBridge";
     cls.hCursor=LoadCursorW(nullptr,IDC_ARROW); cls.hbrBackground=reinterpret_cast<HBRUSH>(COLOR_WINDOW+1); RegisterClassW(&cls);
     HWND window=CreateWindowW(cls.lpszClassName,L"HXAudio Voicemeeter Bridge (实验版)",WS_OVERLAPPED|WS_CAPTION|WS_SYSMENU|WS_MINIMIZEBOX,
-        CW_USEDEFAULT,CW_USEDEFAULT,660,650,nullptr,nullptr,instance,nullptr);
+        CW_USEDEFAULT,CW_USEDEFAULT,660,680,nullptr,nullptr,instance,nullptr);
     if (!window) { CoUninitialize(); CloseHandle(mutex); return 3; }
     if (args.find(L"--realtime-ui-self-test") != std::wstring::npos) {
         const int result=bridge::RealtimeUiTest(window); DestroyWindow(window); CoUninitialize(); CloseHandle(mutex); return result;

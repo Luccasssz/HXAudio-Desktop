@@ -122,3 +122,84 @@ Capture discontinuities are cumulative, including startup transients; a solitary
 increment is not by itself an audible fault. Render missing-data callbacks can
 also occur when the source is silent/stopped. Neither count is labeled as DSP
 clipping, nor treated as proof of a persistent hardware fault.
+
+## Experimental small-speaker psychoacoustic mode
+
+The original mode remains the default and is unchanged. Enable Virtual Bass,
+then toggle **小扬声器优化** during playback for a 20 ms mode crossfade. Both
+banks stay warm and use the existing strength ramp and downstream peak guards.
+No route, WASAPI session, PEQ, installer or uninstaller change is needed.
+
+Analysis of the original mode:
+- Its cascaded 80 Hz low-pass passes about 29% amplitude at 100 Hz (-10.7 dB).
+- Its four harmonic high-pass biquads form an eighth-order filter: an 80 Hz
+  second harmonic is reduced to 25% (-12 dB), while 120 Hz passes about 70%.
+- The 2/3/4 weighted combination partly cancels its quadratic term:
+  0.58*(2*x^2) + 0.13*(8*x^4-8*x^2) = 0.12*x^2 + 1.04*x^4.
+- Division by drive and the preceding wet-gain reduction further limit output.
+- The replacement mix approaches fully high-passed dry sound at 100% strength,
+  reducing the original fundamental even when the speaker can reproduce it.
+
+The new additive bank extracts bass with a 40 Hz second-order high-pass and
+110 Hz fourth-order low-pass. These are overlapping synthesis bands, not brick
+walls or measurements of the physical speaker. A per-channel envelope (10 ms
+attack / 120 ms release) normalizes bounded tanh excitation, with a 0.03 floor
+that avoids amplifying near-silence. The 2/3/4 polynomial weights are 0.25/0.55/
+0.20. A 120 Hz sixth-order high-pass suppresses residual fundamental leakage;
+a 400 Hz fourth-order low-pass reduces higher harmonics. A second tanh stage
+bounds the additive wet signal to ±0.25 before the existing Bridge guards.
+The original dry bass is not deliberately removed, at any strength. Residual
+wet fundamental can still interfere in phase; the tests measure that explicitly.
+
+These filter/gain choices were selected by synthetic spectral comparisons,
+including rejecting an earlier candidate that lost too much fundamental. They
+are provisional: actual speaker response and preference still require listening.
+Tanh saturation also produces orders above 2/3/4; this is harmonic enrichment,
+not transparent reproduction. Music can produce intermodulation. If voices or
+midrange become rough, reduce strength or return to the original mode.
+
+CI writes `bridge-small-speaker-spectrum.csv` and `bridge-small-speaker.log`.
+The CSV contains 40/50/60/80/100 Hz results at four sample rates, three input
+levels and four strengths, for both modes: fundamental, second/third/fourth,
+120–350 Hz harmonic energy, total RMS, intentional THD (orders 2–10), higher
+harmonics above 700 Hz and protection counts. Intentional THD is not interpreted
+as unwanted distortion alone. Harmonics above the tenth are not included in
+that metric. Synthetic music is additionally compared through the same
+120/350 Hz analysis filters with total-RMS normalization; this filtered metric
+has transition-band leakage and is not a brick-wall FFT measurement. A separate
+per-note projection measures the known bass-note harmonics within 120–350 Hz
+after each note settles, divided by total RMS squared; it excludes other
+non-harmonic transient energy.
+
+The acceptance checks require stronger absolute target harmonics across the
+matrix, fundamental retention, limited measured upper harmonics, and a higher
+fraction of target harmonics at equal total RMS for every 50%-strength,
+0.5-amplitude test tone. At 100% the original mode removes much of the bass;
+its normalized harmonic fraction can exceed the new mode's despite much lower
+absolute target energy. Keeping bass and maximizing harmonic fraction are not
+the same goal. No claim is made that all normalized settings sound stronger.
+
+### Repeatable A/B listening
+
+1. Live comparison: use the same music, gain, PEQ, output volume and 50% strength.
+   Keep Virtual Bass enabled, then alternate only the small-speaker checkbox.
+   Try 30% first if 50% sounds rough. This comparison preserves the dry level,
+   but does not guarantee equal total loudness.
+2. For a loudness-controlled comparison, use the included `speaker-ab` files:
+   `tones-A-original-matched.wav` vs `tones-B-small-speaker-matched.wav`, then
+   the corresponding `music-...-matched.wav` pair. A is the original algorithm;
+   B is the new mode. Each pair is equal total RMS by attenuation only. Separate
+   `raw.wav` files preserve the unnormalized levels for comparison.
+3. The tones run 40/50/60/80/100 Hz, two seconds each, with short fades. The music
+   is a deterministic synthetic bass/kick/chord signal, not a commercial track.
+   Disable Bridge Virtual Bass and set PEQ gain to 0 while playing these files
+   so their already-processed signal is not processed again. Keep player,
+   Windows and physical output volumes identical between A and B.
+4. To regenerate all signals and measurements in a writable folder:
+
+   ```powershell
+   & "$env:LOCALAPPDATA\Programs\HXAudioBridge\HXAudioBridge.exe" --small-speaker-self-test
+   ```
+
+This command is offline and opens no audio client. The test signals, CSV and
+logs reproduce the numerical result, not the user's real listening experience.
