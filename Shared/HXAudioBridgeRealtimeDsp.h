@@ -44,6 +44,7 @@ private:
 struct Parameters {
     double gainDb = -6, frequencyHz = 1000, peqGainDb = 0, q = 0.9;
     double amount = 0.15;
+    double punchDb = 0.0; // Clean-mode harmonic-only punch, not global gain.
     bool enabled = false;
     bool smallSpeaker = false;
     bool cleanBass = false; // Only audible when small-speaker mode is enabled.
@@ -54,18 +55,19 @@ inline bool Valid(const Parameters& p) noexcept {
         std::isfinite(p.frequencyHz) && p.frequencyHz >= 20 && p.frequencyHz <= 20000 &&
         std::isfinite(p.peqGainDb) && p.peqGainDb >= -12 && p.peqGainDb <= 12 &&
         std::isfinite(p.q) && p.q >= 0.1 && p.q <= 10 &&
-        std::isfinite(p.amount) && p.amount >= 0 && p.amount <= 1;
+        std::isfinite(p.amount) && p.amount >= 0 && p.amount <= 1 &&
+        std::isfinite(p.punchDb) && p.punchDb >= 0 && p.punchDb <= 6;
 }
 inline bool SameValues(const Parameters& a, const Parameters& b) noexcept {
     return a.gainDb == b.gainDb && a.frequencyHz == b.frequencyHz &&
-        a.peqGainDb == b.peqGainDb && a.q == b.q && a.amount == b.amount && a.enabled == b.enabled && a.smallSpeaker == b.smallSpeaker && a.cleanBass == b.cleanBass;
+        a.peqGainDb == b.peqGainDb && a.q == b.q && a.amount == b.amount && a.enabled == b.enabled && a.smallSpeaker == b.smallSpeaker && a.cleanBass == b.cleanBass && a.punchDb == b.punchDb;
 }
 inline bool SamePeq(const Parameters& a, const Parameters& b) noexcept {
     return a.frequencyHz == b.frequencyHz && a.peqGainDb == b.peqGainDb && a.q == b.q;
 }
 struct Status {
     Parameters target;
-    double gainDb = -6, amount = 0.15, enableMix = 0;
+    double gainDb = -6, punchDb = 0, amount = 0.15, enableMix = 0;
     double peqHz = 1000, peqDb = 0, peqQ = 0.9;
     bool transitioning = false;
 };
@@ -120,6 +122,7 @@ public:
         m_control = control; m_target = Valid(initial) ? initial : Parameters{};
         m_peqTarget = m_target; m_active = 0; m_fadePosition = m_fadeFrames;
         m_gain.Reset(std::pow(10.0, m_target.gainDb / 20));
+        m_punch.Reset(std::pow(10.0, m_target.punchDb / 20));
         m_amount.Reset(m_target.amount); m_enabled.Reset(m_target.enabled ? 1 : 0);
         m_speakerMix.Reset(m_target.smallSpeaker ? 1 : 0);
         m_cleanMix.Reset(m_target.cleanBass ? 1 : 0);
@@ -136,6 +139,7 @@ public:
         if (m_control && m_control->requests.Latest(next) && Valid(next)) {
             m_target = next;
             m_gain.Set(std::pow(10.0, next.gainDb / 20), m_rampFrames);
+            m_punch.Set(std::pow(10.0, next.punchDb / 20), m_rampFrames);
             m_amount.Set(next.amount, m_rampFrames);
             m_enabled.Set(next.enabled ? 1 : 0, m_rampFrames);
             m_speakerMix.Set(next.smallSpeaker ? 1 : 0,m_rampFrames);
@@ -146,7 +150,7 @@ public:
             m_peqTarget = m_target; m_fadePosition = 0;
         }
         for (UINT32 frame = 0; frame < frames; ++frame) {
-            const double gain = m_gain.Next(), amount = m_amount.Next(), speakerMix=m_speakerMix.Next(), cleanMix=m_cleanMix.Next();
+            const double gain = m_gain.Next(), punchGain=m_punch.Next(), amount = m_amount.Next(), speakerMix=m_speakerMix.Next(), cleanMix=m_cleanMix.Next();
             // At 0%, bypass all bass processing. Keep the internal bass filters
             // warm, including while disabled, so rapid toggles never revive stale state.
             const double mix = m_enabled.Next() * std::min(1.0, amount / 0.01);
@@ -164,7 +168,13 @@ public:
                 // Hybrid preserves a fraction of the already-auditioned punch
                 // while reducing broadband nonlinear cross-products. It is
                 // an experimental timbre compromise, not an IMD guarantee.
-                const float clean=static_cast<float>(0.40*optimized+0.60*multiband);
+                float clean=static_cast<float>(0.40*optimized+0.60*multiband);
+                // Preserve the validated clean-bass sound bit-for-bit at 0 dB.
+                // Boost only its synthesized wet residual, never the dry music,
+                // original bass fundamental or the legacy mode. This is not
+                // a second nonlinear exciter, so it adds no new cross-products
+                // unless downstream peak protection needs to intervene.
+                if (punchGain != 1.0) clean=static_cast<float>(dry+(clean-dry)*punchGain);
                 const float selected=static_cast<float>(optimized+cleanMix*(clean-optimized));
                 const float bass=static_cast<float>(legacy+speakerMix*(selected-legacy));
                 const float input = static_cast<float>((dry + mix * (bass - dry)) * gain);
@@ -177,9 +187,10 @@ public:
     }
     Status CurrentStatus() const noexcept {
         Status s; s.target=m_target; s.gainDb=20*std::log10(m_gain.current);
+        s.punchDb=20*std::log10(m_punch.current);
         s.amount=m_amount.current; s.enableMix=m_enabled.current;
         s.peqHz=m_peqTarget.frequencyHz; s.peqDb=m_peqTarget.peqGainDb; s.peqQ=m_peqTarget.q;
-        s.transitioning=Fading() || m_gain.remaining || m_amount.remaining || m_enabled.remaining || m_speakerMix.remaining || m_cleanMix.remaining || !SamePeq(m_target,m_peqTarget);
+        s.transitioning=Fading() || m_gain.remaining || m_punch.remaining || m_amount.remaining || m_enabled.remaining || m_speakerMix.remaining || m_cleanMix.remaining || !SamePeq(m_target,m_peqTarget);
         return s;
     }
 private:
@@ -190,7 +201,7 @@ private:
     UINT32 m_rate=48000, m_channels=0, m_rampFrames=960, m_fadeFrames=1440, m_fadePosition=1440;
     int m_active=0;
     Parameters m_target, m_peqTarget;
-    Ramp m_gain, m_amount, m_enabled, m_speakerMix, m_cleanMix;
+    Ramp m_gain, m_punch, m_amount, m_enabled, m_speakerMix, m_cleanMix;
     SmallSpeakerBassProcessor m_smallSpeaker;
     CleanSmallSpeakerBassProcessor m_cleanSpeaker;
     VirtualBassProcessor m_bass;
