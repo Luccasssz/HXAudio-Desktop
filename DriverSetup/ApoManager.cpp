@@ -1796,8 +1796,6 @@ namespace HXAudioApoManager
 
         DWORD RestoreEndpoint(HKEY renderRoot, const std::wstring& endpoint,
             bool& changed, DWORD& stage);
-        bool RemoveApoFromValue(HKEY fx, const wchar_t* name, bool& changed);
-        bool RemoveApoFromComposite(HKEY fx, bool& changed);
 
         DWORD ApplyEndpoint(HKEY renderRoot, const std::wstring& endpoint,
             bool& changed, DWORD& stage)
@@ -2206,36 +2204,6 @@ namespace HXAudioApoManager
             return true;
         }
 
-        bool RemoveApoFromComposite(HKEY fx, bool& changed)
-        {
-            return RemoveApoFromValue(fx, kCompositeValue, changed);
-        }
-
-        bool RemoveApoFromValue(HKEY fx, const wchar_t* name, bool& changed)
-        {
-            DWORD type = 0;
-            std::vector<BYTE> data;
-            if (!QueryRaw(fx, name, type, data)) return true;
-            auto effects = DecodeStrings(type, data);
-            if (!ContainsClsid(effects)) return true;
-            effects.erase(std::remove_if(effects.begin(), effects.end(),
-                [](const std::wstring& value)
-                {
-                    return _wcsicmp(value.c_str(), kApoClsid) == 0;
-                }), effects.end());
-            LONG result = ERROR_SUCCESS;
-            if (effects.empty()) result = RegDeleteValueW(fx, name);
-            else
-            {
-                const auto encoded = EncodeMultiString(effects);
-                result = RegSetValueExW(fx, name, 0, REG_MULTI_SZ,
-                    encoded.data(), static_cast<DWORD>(encoded.size()));
-            }
-            if (result == ERROR_FILE_NOT_FOUND) result = ERROR_SUCCESS;
-            if (result == ERROR_SUCCESS) changed = true;
-            return result == ERROR_SUCCESS;
-        }
-
         DWORD RestoreEndpoint(HKEY renderRoot, const std::wstring& endpoint,
             bool& changed, DWORD& stage)
         {
@@ -2275,57 +2243,10 @@ namespace HXAudioApoManager
             // driver identity. Never replay their snapshots over live OEM data.
             // Keep the backup and require a separately reviewed recovery.
             if (hasBackup) { RegCloseKey(backup); RegCloseKey(fx); return ERROR_REVISION_MISMATCH; }
-            bool ok = true;
-            bool restoredCompleteSchema = false;
-            if (hasBackup && QueryDword(backup, L"Complete", complete) && complete == 1)
-            {
-                DWORD schemaVersion = 0;
-                QueryDword(backup, L"SchemaVersion", schemaVersion);
-                if (schemaVersion >= kBackupSchemaVersion)
-                {
-                    for (const auto& value : kEffectValues)
-                        ok = ok && RestoreValue(backup, fx, value.name,
-                            value.prefix, changed);
-                    for (const auto& value : kProcessingModeValues)
-                        ok = ok && RestoreValue(backup, fx, value.name,
-                            value.prefix, changed);
-                    ok = ok && RestoreValue(backup, fx, kDisableSysFxValue,
-                        L"Disable", changed) && RestoreValue(backup, fx,
-                            kAssociationValue, L"Association", changed) &&
-                        RestoreExternalApoAssociations(backup, fx, changed);
-                    restoredCompleteSchema = ok;
-                }
-                else
-                {
-                    ok = RestoreValue(backup, fx, kCompositeValue, L"Composite",
-                        changed) && RestoreValue(backup, fx, kDisableSysFxValue,
-                            L"Disable", changed);
-                    if (ok && schemaVersion >= 2)
-                        ok = RestoreValue(backup, fx, kEfxProcessingModesValue,
-                            L"EfxModes", changed);
-                    if (ok && schemaVersion >= 3)
-                        ok = RestoreValue(backup, fx, kSingleEndpointValue,
-                            L"SingleEndpoint", changed);
-                    if (ok && schemaVersion >= 4)
-                        ok = RestoreValue(backup, fx, kSfxProcessingModesValue,
-                            L"SfxModes", changed) && RestoreValue(backup, fx,
-                                kSingleStreamValue, L"SingleStream", changed);
-                    if (ok && schemaVersion >= 5)
-                        ok = RestoreValue(backup, fx, kAssociationValue,
-                            L"Association", changed);
-                }
-            }
-            // Without a complete schema-7 backup, remove HXAudio from every
-            // possible effect slot while leaving all unrelated OEM entries intact.
-            if (ok && !restoredCompleteSchema)
-                for (const auto& value : kEffectValues)
-                    ok = ok && RemoveApoFromValue(fx, value.name, changed);
-            if (ok && !restoredCompleteSchema)
-                for (const auto& value : kEffectValues)
-                    ok = ok && !ValueContainsApo(fx, value.name);
-            if (backup) RegCloseKey(backup);
+            // No backup and no HXAudio effect was observed: do not rewrite the
+            // store, which may contain OEM values not owned by this installer.
             RegCloseKey(fx);
-            return ok ? ERROR_SUCCESS : ERROR_WRITE_FAULT;
+            return ERROR_SUCCESS;
         }
 
         bool RestoreAllEndpoints(EndpointSummary& summary, bool& changed, DWORD& error)
@@ -3221,7 +3142,10 @@ namespace HXAudioApoManager
         const bool apoStateExists = !dll.empty() || apoKeyExists;
         DWORD cleanupComplete = 0;
         if (apoKey) { QueryDword(apoKey, L"CleanupComplete", cleanupComplete); RegCloseKey(apoKey); }
-        if (cleanupComplete == 1 && dll.empty()) return 0;
+        // A persisted marker proves neither endpoint nor component state.
+        // Until independent verification exists, fail closed and keep recovery
+        // material instead of reporting an unverified successful cleanup.
+        if (cleanupComplete == 1 && dll.empty()) return 43;
 
         if (apoStateExists)
         {
