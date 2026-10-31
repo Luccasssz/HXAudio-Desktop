@@ -208,6 +208,7 @@ namespace HXAudioApoManager
             DWORD win32Known = 0;
             std::wstring phase;
             DWORD rollbackStatus = 0; // 0 not attempted, 1 old restored, 2 fallback attempted, 3 old restore failed
+            DWORD rollbackCode = 0; // first observed fallback exit code, 0 means none observed
         };
 
         SERVICE_STATUS_HANDLE g_statusHandle = nullptr;
@@ -2895,6 +2896,7 @@ namespace HXAudioApoManager
                 SetDword(key, L"ApoInstallFailureWin32Known", diagnostic.win32Known) &&
                 SetRegistryStringValue(key, L"ApoInstallFailurePhase", diagnostic.phase) &&
                 SetDword(key, L"ApoInstallFailureRollbackStatus", diagnostic.rollbackStatus) &&
+                SetDword(key, L"ApoInstallFailureRollbackCode", diagnostic.rollbackCode) &&
                 SetDword(key, L"ApoInstallFailureError", diagnostic.error) &&
                 SetDword(key, L"ApoInstallFailureStage", diagnostic.stage) &&
                 SetDword(key, L"ApoInstallFailureMask", diagnostic.mask) &&
@@ -3004,7 +3006,7 @@ namespace HXAudioApoManager
             installFailure.phase = phase;
             if (!SaveInstallFailureDiagnostic(installFailure))
                 std::wcerr << L"Unable to save install failure diagnostic." << std::endl;
-            std::wcerr << L"HXAudio install failed: exit=" << code << L", phase=" << phase << std::endl;
+            std::wcerr << std::dec << L"HXAudio install failed: exit=" << code << L", phase=" << phase << std::endl;
             return code;
         };
         wchar_t fullPath[MAX_PATH]{};
@@ -3045,11 +3047,15 @@ namespace HXAudioApoManager
             {
                 DWORD restoreBaseline = ReadSettingsDword(
                     L"ApoOperationSerial", 0);
-                if (StartOperationService(kOperationRestore,
-                    restoreBaseline) == 0)
-                    WaitForOperation(restoreBaseline, kGuardStopped, 90000);
-                RemoveService();
-                CallDllExport(fullPath, "DllUnregisterServer");
+                int restoreResult = StartOperationService(kOperationRestore, restoreBaseline);
+                if (restoreResult == 0)
+                    restoreResult = WaitForOperation(restoreBaseline, kGuardStopped, 90000);
+                if (restoreResult != 0) installFailure.rollbackCode = static_cast<DWORD>(restoreResult);
+                const int removeResult = RemoveService();
+                if (removeResult != 0 && installFailure.rollbackCode == 0)
+                    installFailure.rollbackCode = static_cast<DWORD>(removeResult);
+                if (FAILED(CallDllExport(fullPath, "DllUnregisterServer")) && installFailure.rollbackCode == 0)
+                    installFailure.rollbackCode = 41;
                 if (!hadWorkingApo)
                 {
                     RegDeleteTreeW(HKEY_LOCAL_MACHINE, kApoPath);
@@ -3605,17 +3611,18 @@ namespace HXAudioApoManager
 
             InstallFailureDiagnostic failure{true, ERROR_NOT_FOUND, kStageVerify, 33, L"fake-endpoint"};
             failure.exitCode = 56; failure.win32Known = 1;
-            failure.phase = L"verify-guard"; failure.rollbackStatus = 2;
+            failure.phase = L"verify-guard"; failure.rollbackStatus = 2; failure.rollbackCode = 57;
             // Simulate rollback writing new guard state before saving original failure.
             ok = SetDword(root, L"ApoLastError", ERROR_SUCCESS) &&
                 WriteInstallFailureDiagnostic(root, failure);
             DWORD savedError = 0, savedStage = 0, savedMask = 0, guardError = 1, valid = 0;
-            DWORD savedExit = 0, savedKnown = 0, savedRollback = 0;
+            DWORD savedExit = 0, savedKnown = 0, savedRollback = 0, savedRollbackCode = 0;
             std::wstring savedEndpoint, savedPhase;
             ok = ok && QueryDword(root, L"ApoInstallFailureValid", valid) && valid == 1 &&
                 QueryDword(root, L"ApoInstallFailureExitCode", savedExit) && savedExit == 56 &&
                 QueryDword(root, L"ApoInstallFailureWin32Known", savedKnown) && savedKnown == 1 &&
                 QueryDword(root, L"ApoInstallFailureRollbackStatus", savedRollback) && savedRollback == 2 &&
+                QueryDword(root, L"ApoInstallFailureRollbackCode", savedRollbackCode) && savedRollbackCode == 57 &&
                 QueryRegistryStringValue(root, L"ApoInstallFailurePhase", savedPhase) && savedPhase == L"verify-guard" &&
                 QueryDword(root, L"ApoInstallFailureError", savedError) &&
                 QueryDword(root, L"ApoInstallFailureStage", savedStage) &&
