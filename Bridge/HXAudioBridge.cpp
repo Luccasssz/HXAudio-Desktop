@@ -3,15 +3,19 @@
 #define wWinMain HXAudioLegacyEntryPoint
 #include "../ControlPanel/HXAudioControl.cpp"
 #undef wWinMain
+#include "../Shared/HXAudioBridgePeakGuard.h"
+#include "../tests/virtual_bass_tests.h"
 
 namespace bridge {
 constexpr int kSource = 4101, kTarget = 4102, kRefresh = 4103, kStart = 4104,
     kStop = 4105, kGain = 4106, kBass = 4107, kFreq = 4108, kPeqGain = 4109,
-    kQ = 4110, kBuffer = 4111, kStatus = 4112;
+    kQ = 4110, kBuffer = 4111, kStatus = 4112, kBassAmount = 4113;
 HWND sourceBox = nullptr, targetBox = nullptr, statusText = nullptr;
 std::vector<DeviceInfo> sources, targets;
 HANDLE worker = nullptr, stop = nullptr;
 std::atomic<long> state{0}, failure{0}, inputPeak{0}, outputPeak{0};
+std::atomic<unsigned long long> dspOver{0}, dspInvalid{0}, protectedSamples{0},
+    hardClips{0}, sourceInvalid{0}, resamplerProtected{0}, underruns{0}, missingFrames{0}, discontinuities{0};
 bool failureNotified = false;
 struct Config { std::wstring source, target; DspSettings dsp; DWORD buffer = 10; } config;
 
@@ -96,7 +100,7 @@ HRESULT RunSession(const Config& c, HANDLE stopEvent) {
     std::unique_ptr<TargetWorker> output;
     if (SUCCEEDED(hr)) {
         output = std::make_unique<TargetWorker>(c.target, DeviceName(target.Get()), L"ENDPOINT|" + c.target,
-            &bus.Format, c.buffer, stopEvent, failedEvent, 1, false, false);
+            &bus.Format, c.buffer, stopEvent, failedEvent, 1, false, false, true);
         if (!output->Start()) hr = E_FAIL;
         else if (!output->WaitUntilReady(10000) || !output->IsActive()) hr = FAILED(output->Result()) ? output->Result() : E_FAIL;
     }
@@ -119,17 +123,25 @@ HRESULT RunSession(const Config& c, HANDLE stopEvent) {
             if (FAILED(source->GetState(&ss)) || FAILED(target->GetState(&ts)) || ss != DEVICE_STATE_ACTIVE || ts != DEVICE_STATE_ACTIVE) { hr = AUDCLNT_E_DEVICE_INVALIDATED; break; }
             nextStateCheck = GetTickCount64() + 500;
         }
+        underruns.store(output->UnderrunCallbacks()); missingFrames.store(output->MissingFrames());
+        resamplerProtected.store(output->ResamplerProtected());
         UINT32 packet = 0; hr = capture->GetNextPacketSize(&packet);
         if (packet == 0 && GetTickCount64() - lastPacket > 1000) { inputPeak.store(0); outputPeak.store(0); }
         while (SUCCEEDED(hr) && packet) {
             BYTE* data = nullptr; UINT32 frames = 0; DWORD flags = 0;
             hr = capture->GetBuffer(&data, &frames, &flags, nullptr, nullptr); if (FAILED(hr)) break;
+            if (flags & AUDCLNT_BUFFERFLAGS_DATA_DISCONTINUITY) discontinuities.fetch_add(1);
             bool converted = ConvertToFloatBus((flags & AUDCLNT_BUFFERFLAGS_SILENT) ? nullptr : data, frames, fmt, samples);
             if (converted) {
                 lastPacket = GetTickCount64();
+                for (auto& sample : samples) if (!std::isfinite(sample)) { sourceInvalid.fetch_add(1); sample = 0.0f; }
                 inputPeak.store(FloatPeakQ31(samples)); dsp.Process(samples.data(), frames);
-                for (auto& sample : samples) sample = std::isfinite(sample) ? std::clamp(sample, -1.0f, 1.0f) : 0.0f;
+                HXAudioDsp::BridgePeakStats stats;
+                for (auto& sample : samples) sample = HXAudioDsp::BridgePeakGuard(sample, stats);
+                dspOver.fetch_add(stats.overRange); dspInvalid.fetch_add(stats.nonFinite);
+                protectedSamples.fetch_add(stats.protectedSamples); hardClips.fetch_add(stats.hardClips);
                 outputPeak.store(FloatPeakQ31(samples)); output->Push(samples.data(), frames);
+                underruns.store(output->UnderrunCallbacks()); missingFrames.store(output->MissingFrames());
             }
             const HRESULT release = capture->ReleaseBuffer(frames);
             if (FAILED(release)) hr = release; else if (!converted) hr = AUDCLNT_E_UNSUPPORTED_FORMAT;
@@ -137,7 +149,7 @@ HRESULT RunSession(const Config& c, HANDLE stopEvent) {
         }
     }
     if (client) client->Stop();
-    SetEvent(stopEvent); if (output) output->Join();
+    SetEvent(stopEvent); if (output) { output->Join(); underruns.store(output->UnderrunCallbacks()); missingFrames.store(output->MissingFrames()); }
     if (fmt) CoTaskMemFree(fmt); CloseHandle(failedEvent); CloseHandle(captureEvent);
     return hr;
 }
@@ -162,17 +174,18 @@ void Start(HWND w) {
     const LRESULT a = SendMessageW(sourceBox, CB_GETCURSEL, 0, 0), b = SendMessageW(targetBox, CB_GETCURSEL, 0, 0);
     if (a < 0 || b < 0 || static_cast<size_t>(a) >= sources.size() || static_cast<size_t>(b) >= targets.size()) { MessageBoxW(w, L"请选择 Voicemeeter 输入和物理输出。", L"HXAudio Bridge", MB_ICONWARNING); return; }
     Config next; next.source = sources[a].id; next.target = targets[b].id;
-    double gain = 0, hz = 0, peq = 0, q = 0, buffer = 0;
+    double gain = 0, hz = 0, peq = 0, q = 0, buffer = 0, bassAmount = 0;
     if (!IsAllowedTarget(next.source, next.target, targets[b].name) || !Number(w,kGain,-24,0,gain) ||
-        !Number(w,kFreq,20,20000,hz) || !Number(w,kPeqGain,-12,12,peq) || !Number(w,kQ,0.1,10,q) || !Number(w,kBuffer,5,100,buffer)) {
-        MessageBoxW(w,L"检查设备和参数：增益 -24 至 0 dB，频率 20–20000 Hz，PEQ ±12 dB，Q 0.1–10，缓冲 5–100 ms。",L"HXAudio Bridge",MB_ICONWARNING); return;
+        !Number(w,kFreq,20,20000,hz) || !Number(w,kPeqGain,-12,12,peq) || !Number(w,kQ,0.1,10,q) || !Number(w,kBuffer,5,100,buffer) || !Number(w,kBassAmount,0,100,bassAmount)) {
+        MessageBoxW(w,L"检查设备和参数：增益 -24 至 0 dB，频率 20–20000 Hz，PEQ ±12 dB，Q 0.1–10，缓冲 5–100 ms，低频强度 0–100%。",L"HXAudio Bridge",MB_ICONWARNING); return;
     }
     if (MessageBoxW(w,L"请确认 Voicemeeter 中通往物理输出的直通总线已关闭，且输出不会重新进入该输入。否则可能重复播放或反馈。确认后开始？",L"开始前检查",MB_YESNO|MB_ICONWARNING) != IDYES) return;
     next.dsp.preampDb = gain; next.dsp.virtualBassEnabled = SendDlgItemMessageW(w,kBass,BM_GETCHECK,0,0) == BST_CHECKED;
-    next.dsp.virtualBassAmount = next.dsp.virtualBassEnabled ? 0.5 : 0;
+    next.dsp.virtualBassAmount = next.dsp.virtualBassEnabled ? bassAmount / 100.0 : 0;
     next.dsp.peqBands.push_back({true,PeqFilterType::Peak,hz,peq,q}); next.buffer = static_cast<DWORD>(buffer);
     config = std::move(next); stop = CreateEventW(nullptr, TRUE, FALSE, nullptr);
     if (!stop) { state.store(3); failure.store(E_OUTOFMEMORY); return; }
+    sourceInvalid=0; resamplerProtected=0; dspOver=0; dspInvalid=0; protectedSamples=0; hardClips=0; underruns=0; missingFrames=0; discontinuities=0;
     state.store(1); inputPeak.store(0); outputPeak.store(0); failure.store(0); failureNotified = false;
     worker = CreateThread(nullptr,0,Thread,nullptr,0,nullptr);
     if (!worker) { CloseHandle(stop); stop = nullptr; state.store(3); failure.store(E_FAIL); }
@@ -191,17 +204,18 @@ LRESULT CALLBACK Proc(HWND w, UINT msg, WPARAM wp, LPARAM lp) {
         Add(w,L"STATIC",L"前级 dB",0,15,140,80,22); Add(w,L"EDIT",L"-6",WS_BORDER,95,137,55,25,kGain);
         Add(w,L"BUTTON",L"虚拟低频",BS_AUTOCHECKBOX,170,138,110,25,kBass);
         Add(w,L"STATIC",L"缓冲 ms",0,300,140,75,22); Add(w,L"EDIT",L"20",WS_BORDER,378,137,50,25,kBuffer);
+        Add(w,L"STATIC",L"低频强度 %",0,445,140,100,22); Add(w,L"EDIT",L"15",WS_BORDER,548,137,55,25,kBassAmount);
         Add(w,L"STATIC",L"PEQ: Hz",0,15,180,75,22); Add(w,L"EDIT",L"1000",WS_BORDER,90,177,65,25,kFreq);
         Add(w,L"STATIC",L"dB",0,170,180,25,22); Add(w,L"EDIT",L"0",WS_BORDER,200,177,55,25,kPeqGain);
         Add(w,L"STATIC",L"Q",0,270,180,20,22); Add(w,L"EDIT",L"0.9",WS_BORDER,295,177,55,25,kQ);
         Add(w,L"BUTTON",L"开始处理",0,15,225,120,30,kStart); Add(w,L"BUTTON",L"停止",0,145,225,100,30,kStop);
-        statusText=Add(w,L"STATIC",L"",0,15,275,610,45,kStatus);
-        Add(w,L"STATIC",L"请在 Voicemeeter 中关闭直通物理输出，避免重复播放；停止桥接前请手动切回系统输出。",0,15,325,610,50);
+        statusText=Add(w,L"STATIC",L"",0,15,275,610,85,kStatus);
+        Add(w,L"STATIC",L"请在 Voicemeeter 中关闭直通物理输出，避免重复播放；停止桥接前请手动切回系统输出。",0,15,365,610,50);
         SetTimer(w,1,250,nullptr); Refresh(); return 0;
     case WM_COMMAND:
         switch (LOWORD(wp)) { case kRefresh: Refresh(); break; case kStart: Start(w); break; case kStop: Stop(); state.store(0); SetWindowTextW(statusText,L"已停止。请手动切换播放设备。"); break; } return 0;
     case WM_TIMER: {
-        const long s=state.load(); if (s==2) { wchar_t text[200]{}; swprintf_s(text,L"运行中：输入峰值 %.1f%%，处理后 %.1f%%。",inputPeak.load()*100.0/2147483647.0,outputPeak.load()*100.0/2147483647.0); SetWindowTextW(statusText,text); }
+        const long s=state.load(); if (s==2) { wchar_t text[600]{}; swprintf_s(text,L"运行中：输入峰值 %.1f%%，处理后 %.1f%%。\nDSP 超幅 %llu / 非有限 %llu / 软保护 %llu / 硬削波 %llu\n渲染欠载 %llu 次 / 缺帧 %llu / 捕获不连续 %llu\n输入非有限 %llu / 重采样软保护 %llu",inputPeak.load()*100.0/2147483647.0,outputPeak.load()*100.0/2147483647.0,dspOver.load(),dspInvalid.load(),protectedSamples.load(),hardClips.load(),underruns.load(),missingFrames.load(),discontinuities.load(),sourceInvalid.load(),resamplerProtected.load()); SetWindowTextW(statusText,text); }
         else if (s==1) SetWindowTextW(statusText,L"正在连接设备…");
         else if (s==3) { wchar_t text[240]{}; swprintf_s(text,L"桥接已停止（0x%08lX）。检查设备，刷新后手动重试；请切回系统输出。",static_cast<unsigned long>(failure.load())); SetWindowTextW(statusText,text); if (worker && WaitForSingleObject(worker,0)==WAIT_OBJECT_0) Stop(); if (!failureNotified) { failureNotified = true; MessageBoxW(w,text,L"HXAudio Bridge 已断开",MB_OK|MB_ICONWARNING); } }
         return 0;
@@ -215,6 +229,7 @@ LRESULT CALLBACK Proc(HWND w, UINT msg, WPARAM wp, LPARAM lp) {
 
 int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR commandLine, int show) {
     const std::wstring args = commandLine ? commandLine : L"";
+    if (args.find(L"--virtual-bass-self-test") != std::wstring::npos) return RunVirtualBassRegressionTests();
     if (args.find(L"--dsp-self-test") != std::wstring::npos) return RunDspSelfTest();
     if (args.find(L"--bridge-self-test") != std::wstring::npos) return bridge::SelfTest();
     HANDLE mutex = CreateMutexW(nullptr,FALSE,L"Local\\HXAudioVoiceMeeterBridge");
@@ -225,7 +240,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR commandLine, int show) 
     WNDCLASSW cls{}; cls.lpfnWndProc=bridge::Proc; cls.hInstance=instance; cls.lpszClassName=L"HXAudioVoiceMeeterBridge";
     cls.hCursor=LoadCursorW(nullptr,IDC_ARROW); cls.hbrBackground=reinterpret_cast<HBRUSH>(COLOR_WINDOW+1); RegisterClassW(&cls);
     HWND window=CreateWindowW(cls.lpszClassName,L"HXAudio Voicemeeter Bridge (实验版)",WS_OVERLAPPED|WS_CAPTION|WS_SYSMENU|WS_MINIMIZEBOX,
-        CW_USEDEFAULT,CW_USEDEFAULT,660,430,nullptr,nullptr,instance,nullptr);
+        CW_USEDEFAULT,CW_USEDEFAULT,660,470,nullptr,nullptr,instance,nullptr);
     if (!window) { CoUninitialize(); CloseHandle(mutex); return 3; }
     ShowWindow(window,show); MSG msg{}; while (GetMessageW(&msg,nullptr,0,0)>0) { TranslateMessage(&msg); DispatchMessageW(&msg); }
     CoUninitialize(); CloseHandle(mutex); return 0;

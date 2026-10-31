@@ -44,6 +44,7 @@
 #include <vector>
 
 #include "resource.h"
+#include "../Shared/HXAudioBridgePeakGuard.h"
 #include "..\Shared\HXAudioDspHeadroom.h"
 
 using Microsoft::WRL::ComPtr;
@@ -5701,7 +5702,8 @@ namespace
         {
             constexpr double butterworthQ = 0.7071067811865476;
             m_enabled = settings.virtualBassEnabled;
-            m_amount = std::clamp(settings.virtualBassAmount, 0.0, 2.0);
+            m_amount = std::isfinite(settings.virtualBassAmount)
+                ? std::clamp(settings.virtualBassAmount, 0.0, 2.0) : 0.0;
             m_mode = settings.virtualBassMode;
             m_multipliers = EffectiveVirtualBassMultipliers(settings);
             if (m_mode == VirtualBassMode::Custom)
@@ -5728,8 +5730,8 @@ namespace
 
             // Two cascaded Butterworth sections make fourth-order Linkwitz-
             // Riley-style splits. The generator itself has no level detector,
-            // compressor, attack or release state. The final stateless HXAudio
-            // Peak Guard is applied only after virtual bass, preamp and PEQ.
+            // compressor, attack or release state. Bridge applies its peak guard
+            // after virtual bass, preamp and PEQ.
             m_subsonic1.Configure(m_subsonicEnabled
                 ? MakeHighPass(sampleRate, subsonic, butterworthQ) : BiquadCoefficients{}, channels);
             m_subsonic2.Configure(m_subsonicEnabled
@@ -5749,6 +5751,8 @@ namespace
         float Process(float input, UINT32 channel)
         {
             if (!m_enabled) return input;
+            // Reject invalid source samples before they poison recursive filters.
+            if (!std::isfinite(input)) input = 0.0f;
 
             float cleaned = m_subsonic1.Process(input, channel);
             cleaned = m_subsonic2.Process(cleaned, channel);
@@ -5765,7 +5769,10 @@ namespace
 
             const double drive = 1.0 + 7.5 * m_amount;
             const double driven = static_cast<double>(low) * drive;
-            const double x = driven;
+            // Smooth bounded excitation: Chebyshev polynomials are bounded only
+            // on [-1, 1]. tanh is continuous with a continuous derivative and
+            // retains harmonic generation without hard-clipping the waveform.
+            const double x = std::tanh(driven);
             const double x2 = x * x;
             const double x3 = x2 * x;
             const double x4 = x2 * x2;
@@ -5801,7 +5808,7 @@ namespace
                 generated /= drive;
             }
 
-            float harmonics = static_cast<float>(generated * m_amount * 2.5);
+            float harmonics = static_cast<float>(generated * m_amount * 1.25);
             harmonics = m_harmonicHighPass1.Process(harmonics, channel);
             harmonics = m_harmonicHighPass2.Process(harmonics, channel);
             harmonics = m_harmonicHighPass3.Process(harmonics, channel);
@@ -6822,11 +6829,12 @@ namespace
         TargetWorker(std::wstring id, std::wstring name, std::wstring profileKey,
             const WAVEFORMATEX* format, DWORD bufferMs, HANDLE stopEvent,
             HANDLE failureEvent, size_t cpuSlot, bool applyPeq = true,
-            bool allowProfileFallback = true)
+            bool allowProfileFallback = true, bool bridgePeakGuard = false)
             : m_id(std::move(id)), m_name(std::move(name)), m_bufferMs(bufferMs),
               m_stopEvent(stopEvent), m_failureEvent(failureEvent), m_cpuSlot(cpuSlot),
               m_profileKey(std::move(profileKey)),
               m_applyPeq(applyPeq), m_allowProfileFallback(allowProfileFallback),
+              m_bridgePeakGuard(bridgePeakGuard),
               m_format(sizeof(WAVEFORMATEX) + format->cbSize),
               m_ring(std::max<size_t>(
                   static_cast<size_t>(format->nAvgBytesPerSec) * std::max<DWORD>(bufferMs * 8, 120) / 1000,
@@ -6882,6 +6890,9 @@ namespace
         HRESULT Result() const { return m_result.load(); }
         DWORD LastPeakQ31() const { return m_lastPeakQ31.load(); }
         DWORD LastCopiedBytes() const { return m_lastCopiedBytes.load(); }
+        unsigned long long ResamplerProtected() const { return m_resamplerProtected.load(); }
+        unsigned long long UnderrunCallbacks() const { return m_underrunCallbacks.load(); }
+        unsigned long long MissingFrames() const { return m_missingFrames.load(); }
         DWORD LastPaddingFrames() const { return m_lastPaddingFrames.load(); }
         DWORD RingBytes() const { return static_cast<DWORD>(std::min<size_t>(m_ring.AvailableBytes(), MAXDWORD)); }
         DWORD EndpointVolumeQ31() const { return m_endpointVolumeQ31.load(); }
@@ -7129,7 +7140,24 @@ namespace
                 ZeroMemory(destination, requestedBytes);
                 const UINT32 renderedFrames = RenderResampled(
                     reinterpret_cast<float*>(destination), availableFrames, sourceFramesPerOutput);
+                // Cubic interpolation can overshoot even a bounded input. Bridge-only
+                // final guard protects the exact float samples sent to WASAPI.
+                if (m_bridgePeakGuard)
+                {
+                    HXAudioDsp::BridgePeakStats stats;
+                    auto* values = reinterpret_cast<float*>(destination);
+                    for (size_t i = 0; i < static_cast<size_t>(renderedFrames) * format->nChannels; ++i)
+                        values[i] = HXAudioDsp::BridgePeakGuard(values[i], stats);
+                    m_resamplerProtected.fetch_add(stats.protectedSamples);
+                }
                 const size_t copied = static_cast<size_t>(renderedFrames) * format->nBlockAlign;
+                // Counts software render starvation after the ring has primed. This
+                // does not claim to measure every hardware/driver WASAPI glitch.
+                if (m_ring.IsPrimed() && renderedFrames < availableFrames)
+                {
+                    m_underrunCallbacks.fetch_add(1);
+                    m_missingFrames.fetch_add(availableFrames - renderedFrames);
+                }
                 m_lastPaddingFrames.store(padding);
                 m_lastCopiedBytes.store(static_cast<DWORD>(std::min<size_t>(copied, MAXDWORD)));
                 m_lastPeakQ31.store(FloatBytesPeakQ31(destination, copied));
@@ -7193,6 +7221,8 @@ namespace
         size_t m_cpuSlot = 0;
         bool m_applyPeq = true;
         bool m_allowProfileFallback = true;
+        bool m_bridgePeakGuard = false;
+        std::atomic<unsigned long long> m_resamplerProtected{ 0 };
         std::vector<BYTE> m_format;
         ByteRing m_ring;
         DspProcessor m_peq;
@@ -7208,6 +7238,7 @@ namespace
         std::atomic<HRESULT> m_result{ E_PENDING };
         std::atomic<DWORD> m_lastPeakQ31{ 0 };
         std::atomic<DWORD> m_lastCopiedBytes{ 0 };
+        std::atomic<unsigned long long> m_underrunCallbacks{ 0 }, m_missingFrames{ 0 };
         std::atomic<DWORD> m_lastPaddingFrames{ 0 };
         std::atomic<DWORD> m_endpointVolumeQ31{ 0 };
         std::atomic<DWORD> m_endpointMuted{ 0 };
