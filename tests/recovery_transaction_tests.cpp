@@ -9,8 +9,9 @@ struct Fake : Adapter {
     std::map<std::wstring, RawValue> values;
     Phase phase = Phase::Pending;
     uint32_t progress = 0;
-    bool trusted = true, valid = true, denyWrite = false;
+    bool isolated = true, trusted = true, valid = true, denyWrite = false;
     int writes = 0, saves = 0, crashAt = -1, crashAfterWrite = -1;
+    bool IsIsolated() override { return isolated; }
     bool TrustedOrigin() override { return trusted; }
     bool ValidFingerprint(const Record&) override { return valid; }
     bool ReadIdentity(Identity& id, std::wstring& p) override { id = identity; p = provider; return true; }
@@ -48,6 +49,8 @@ int main() {
     if (Run(r, good) != Result::Success || good.writes != 2) return 2;
     Fake old = Installed(r); old.trusted = false;
     if (Run(r, old) != Result::Untrusted || old.writes) return 3;
+    Fake live = Installed(r); live.isolated = false;
+    if (Run(r, live) != Result::Untrusted || live.writes || live.saves) return 14;
     Fake damaged = Installed(r); damaged.valid = false;
     if (Run(r, damaged) != Result::Invalid || damaged.writes) return 4;
     Fake updated = Installed(r); updated.identity.driverVersion = L"2.0";

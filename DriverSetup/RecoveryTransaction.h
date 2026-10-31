@@ -36,6 +36,9 @@ struct Record {
 // functions for a disposable registry subtree.
 struct Adapter {
     virtual ~Adapter() = default;
+    // Hard gate: true only for a disposable environment whose writers are
+    // controlled by the test harness. No live registry adapter may return true.
+    virtual bool IsIsolated() = 0;
     virtual bool TrustedOrigin() = 0;
     virtual bool ValidFingerprint(const Record&) = 0;
     virtual bool ReadIdentity(Identity&, std::wstring&) = 0;
@@ -45,6 +48,7 @@ struct Adapter {
 };
 
 inline Result Run(const Record& record, Adapter& adapter) {
+    if (!adapter.IsIsolated()) return Result::Untrusted;
     if (record.schema != 1 || !record.installedConfirmed ||
         record.transactionId.empty() || record.driverProvider.empty() ||
         !HXAudioRestorePlan::ValidIdentity(record.identity) || record.properties.empty() ||

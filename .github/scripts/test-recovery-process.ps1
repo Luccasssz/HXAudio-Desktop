@@ -36,6 +36,10 @@ try {
     Test-Command 'corrupt hash' @('corrupt') 0
     Test-Command 'corrupt refusal' @('run') 3
     Test-Command 'corrupt values retained' @('check-installed') 0
+    Test-Command 'corrupt record init' @('init') 0
+    Test-Command 'corrupt record change' @('corrupt-record') 0
+    Test-Command 'corrupt record refusal' @('run') 3
+    Test-Command 'corrupt record values retained' @('check-installed') 0
     'PASS isolated HKCU child-process interruption and replay' | Tee-Object hxaudio-recovery-process.log -Append
 } finally {
     & $exe clean

@@ -28,6 +28,7 @@ static bool GetBytes(HKEY key, const wchar_t* name, std::vector<uint8_t>& value)
 struct FixtureAdapter : Adapter {
     HKEY root = nullptr, values = nullptr;
     int crashSave = 0, crashWrite = 0, saves = 0, writes = 0;
+    bool IsIsolated() override { return true; } // fixed disposable HKCU subtree only
     bool TrustedOrigin() override { return root && values; } // fixture namespace only; never production authority
     bool ValidFingerprint(const Record& r) override {
         std::vector<uint8_t> stored, canonical, hash, expected;
@@ -77,7 +78,7 @@ int wmain(int argc, wchar_t** argv) {
         RegCreateKeyExW(root, L"FixtureValues", 0, nullptr, REG_OPTION_VOLATILE,
         KEY_ALL_ACCESS, nullptr, &values, nullptr) != ERROR_SUCCESS) return 3;
     FixtureAdapter adapter; adapter.root = root; adapter.values = values;
-    const Record record = Fixture(); int result = 0;
+    Record record = Fixture(); int result = 0;
     if (command == L"init") {
         std::vector<uint8_t> canonical, hash;
         DWORD version = 1;
@@ -87,6 +88,11 @@ int wmain(int argc, wchar_t** argv) {
         for (const auto& p : record.properties) if (!adapter.WriteValue(p.name, p.installed)) result = 4;
         if (RegFlushKey(root) != ERROR_SUCCESS) result = 4;
     } else if (command == L"run") {
+        std::vector<uint8_t> persisted;
+        if (!GetBytes(root, L"Record", persisted) || !DecodeRecord(persisted, record) ||
+            !GetBytes(root, L"Fingerprint", record.fingerprint)) {
+            RegCloseKey(values); RegCloseKey(root); return static_cast<int>(Result::Invalid);
+        }
         if (argc >= 3) adapter.crashSave = _wtoi(argv[2]);
         if (argc >= 4) adapter.crashWrite = _wtoi(argv[3]);
         result = static_cast<int>(Run(record, adapter));
@@ -95,6 +101,8 @@ int wmain(int argc, wchar_t** argv) {
         if (RegSetValueExW(root, L"DriverVersion", 0, REG_DWORD, reinterpret_cast<BYTE*>(&version), sizeof(version)) != ERROR_SUCCESS) result = 4;
     } else if (command == L"corrupt") {
         if (!SetBytes(root, L"Fingerprint", {1,2,3})) result = 4;
+    } else if (command == L"corrupt-record") {
+        if (!SetBytes(root, L"Record", {1,0,0,0,255})) result = 4;
     } else if (command == L"conflict") {
         if (!SetBytes(values, L"effect", {99})) result = 4;
     } else if (command == L"check") {
