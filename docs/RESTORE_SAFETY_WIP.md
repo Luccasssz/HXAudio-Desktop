@@ -23,5 +23,7 @@ export/recovery process that never overwrites current data automatically.
 `CleanupComplete=1` and an empty DLL path now returns failure because neither is
 proof of endpoint or component state. This intentionally prevents some repeat
 uninstalls until a read-only verification path is implemented. There is no new
-transaction persistence, registry fixture, process-crash recovery, independent
-Inno uninstall test, or real Windows audio graph validation on this branch.
+transaction persistence, registry fixture, process-crash recovery, production
+Inno uninstall test, or real Windows audio graph validation on this branch. The
+independent Inno fixture exercises a miniature script with a disposable payload;
+it is not a substitute for testing the complete production uninstaller.

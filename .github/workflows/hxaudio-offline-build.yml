@@ -95,7 +95,7 @@ jobs:
           if errorlevel 1 exit /b 1
           type hxaudio-restore-plan-tests.log
 
-      - name: Compile Inno script only (never run installer)
+      - name: Compile production Inno script and run isolated uninstall fixture
         shell: pwsh
         run: |
           & nuget install Tools.InnoSetup -Version 7.1.0 -OutputDirectory ci-tools -Source https://api.nuget.org/v3/index.json -NonInteractive
@@ -106,8 +106,12 @@ jobs:
           Copy-Item ControlPanel/x64/Release/HXAudioControl.exe,DriverSetup/x64/Release/HXAudioDriverSetup.exe,Apo/x64/Release/HXAudioApo.dll artifacts/apo-staging/
           & $iscc /DMyAppVersion=0.0.0-ci /DMyApoFileName=HXAudioApo.dll Installer/HXAudioApoOnly.iss 2>&1 | Tee-Object hxaudio-inno-compile.log
           $isccExit = $LASTEXITCODE
-          Get-ChildItem artifacts -Filter '*.exe' -File | Remove-Item -Force
           if ($isccExit -ne 0) { throw "Inno compilation failed: $isccExit" }
+          & $iscc tests/inno-uninstall-fixture.iss 2>&1 | Tee-Object hxaudio-inno-fixture-compile.log
+          if ($LASTEXITCODE -ne 0) { throw 'Inno fixture compilation failed' }
+          & pwsh -NoProfile -File .github/scripts/test-inno-fixture.ps1
+          if ($LASTEXITCODE -ne 0) { throw 'Inno fixture test failed' }
+          Get-ChildItem artifacts -Filter '*.exe' -File | Remove-Item -Force
 
       - name: Upload offline build evidence (unsigned, NOT for installation)
         if: always()
