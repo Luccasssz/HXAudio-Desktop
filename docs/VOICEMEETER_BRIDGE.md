@@ -123,6 +123,46 @@ increment is not by itself an audible fault. Render missing-data callbacks can
 also occur when the source is silent/stopped. Neither count is labeled as DSP
 clipping, nor treated as proof of a persistent hardware fault.
 
+## Experimental clean-bass punch (wet only)
+
+The user confirmed that clean multiband mode noticeably separates kick drum,
+bass and male vocals on real laptop speakers, but asked for more bass intensity
+without restoring the earlier muddy sound. This trial **does not modify** the
+existing 60% multiband / 40% original clean-bass synthesis, spectral filters,
+envelopes or mixing ratios. It adds a separate numeric control:
+**低频力度 +dB**, 0..+6 dB, default **0 dB**.
+
+The trim scales only the synthesized wet residual of the selected clean
+small-speaker bank, **not** the dry music, full output, PEQ or legacy bass.
+It has no effect when either 小扬声器优化 or 清晰低频试验 is off.
+0 dB follows the original clean-bass processing expression bit-for-bit.
+There is no additional nonlinear excitation, compression or makeup gain.
+Changes are smoothed over 20 ms by the existing real-time DSP mailbox;
+the actual applied value is shown in the status field. The existing post-DSP
+and resampler peak protection remains active.
+
+For real music, compare 0 / +2 / +4 / +6 dB while retaining your successful
+50% virtual bass setting and unchanged source/output volume. Start at +2 dB.
+Compare both warmth and kick/bass separation. If transient detail becomes
+less defined, or the DSP soft-protection/over-range count rises sharply,
+reduce punch or front preamp and use the original clean mode at 0 dB.
+
+Adding wet-only bass harmonics can increase perceived bass, but it cannot
+create physical low-frequency output beyond the speaker's capabilities,
+and it does not guarantee equal loudness. Heavy peak-guard intervention may
+introduce nonlinear distortion and negate the expected IMD benefits.
+
+\`--bass-punch-self-test\` runs pure-tone spectral/retention checks at
+0/+3/+6 dB, low-level two-tone normalized IMD comparisons, a 20 ms
+real-time parameter ramp, high-level finite/peak tests and exact
+transparency outside clean mode. CI also includes concurrent updates,
+ASan and 10,000-update zero-allocation checks. A/B/C synthetic files
+in \`punch-ab\` are matched in total RMS **by attenuation only** for
+comparison; disable Bridge bass when playing these preprocessed WAVs.
+No real-speaker sound quality is asserted by CI.
+
+No APO, driver, WASAPI, Voicemeeter routing or installer logic is changed.
+
 ## Experimental cleaner bass (multiband A/B)
 
 The original small-speaker optimization remains fully intact and is the
