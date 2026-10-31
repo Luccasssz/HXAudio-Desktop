@@ -1262,7 +1262,7 @@ namespace HXAudioApoManager
                 backup.keyName.assign(name, length);
                 DWORD disabled = 0;
                 if (QueryRegistryStringValue(item, L"InstanceId", backup.instanceId) &&
-                    QueryDword(item, L"WasDisabled", disabled))
+                    !backup.instanceId.empty() && QueryDword(item, L"WasDisabled", disabled) && disabled <= 1)
                 {
                     backup.wasDisabled = disabled != 0;
                     result.push_back(std::move(backup));
@@ -3140,7 +3140,11 @@ namespace HXAudioApoManager
         if (!AbsentKey(HKEY_LOCAL_MACHINE, registration, KEY_WOW64_64KEY) ||
             !AbsentKey(HKEY_LOCAL_MACHINE, registration, KEY_WOW64_32KEY) ||
             !AbsentKey(HKEY_CURRENT_USER, registration, KEY_WOW64_64KEY) ||
-            !AbsentKey(HKEY_CURRENT_USER, registration, KEY_WOW64_32KEY)) return false;
+            !AbsentKey(HKEY_CURRENT_USER, registration, KEY_WOW64_32KEY) ||
+            !AbsentKey(HKEY_LOCAL_MACHINE, engineRegistration, KEY_WOW64_64KEY) ||
+            !AbsentKey(HKEY_LOCAL_MACHINE, engineRegistration, KEY_WOW64_32KEY) ||
+            !AbsentKey(HKEY_CURRENT_USER, engineRegistration, KEY_WOW64_64KEY) ||
+            !AbsentKey(HKEY_CURRENT_USER, engineRegistration, KEY_WOW64_32KEY)) return false;
         bool valid = false;
         const auto componentBackups = ReadApoComponentBackups(&valid);
         if (!valid) return false;

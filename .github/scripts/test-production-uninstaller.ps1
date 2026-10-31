@@ -31,6 +31,11 @@ foreach ($case in @('success','stop','ui','bypass','apo','virtual','verify')) {
     if ($case -eq 'virtual' -and !(Test-Path (Join-Path $app 'apo.done'))) { throw 'APO phase was not reached' }
     $calls = @(Get-Content (Join-Path $app 'calls.log'))
     if (@($calls | Where-Object { $_ -eq 'apo-uninstall' }).Count -ne 0) { throw 'duplicate APO command' }
+    if ($case -eq 'virtual') {
+        $expected = @('--stop','--shutdown-ui','engine-bypass-uninstall','purge')
+        if (($calls -join ',') -ne ($expected -join ',')) { throw 'unexpected cleanup sequence' }
+        if (@(Get-Content (Join-Path $app 'apo.done')).Count -ne 1) { throw 'APO cleanup repeated' }
+    }
     Remove-Item (Join-Path $app "fail_$case")
     $retryLog = Join-Path $base "$case-retry.log"
     $retry = RunExe $uninstaller @('/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART',("/LOG=`"$retryLog`"")) "$case retry"

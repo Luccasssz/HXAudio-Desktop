@@ -19,8 +19,17 @@ int main() {
         reinterpret_cast<const BYTE*>(clsid), sizeof(clsid)) != ERROR_SUCCESS) return 6;
     if (RegistryClean(root)) return 7;
     if (RegDeleteValueW(key, L"effects") != ERROR_SUCCESS) return 8;
+    const BYTE malformed[] = {65, 0, 66};
+    if (RegSetValueExW(key, L"malformed", 0, REG_SZ, malformed, sizeof(malformed)) != ERROR_SUCCESS) return 13;
+    if (RegistryClean(root)) return 14;
+    if (RegDeleteValueW(key, L"malformed") != ERROR_SUCCESS) return 15;
     RegCloseKey(key);
     if (!RegistryClean(root)) return 9;
+    if (!AbsentKey(root, engineRegistration)) return 16;
+    if (RegCreateKeyExW(root, engineRegistration, 0, nullptr, REG_OPTION_VOLATILE,
+        KEY_ALL_ACCESS, nullptr, &key, nullptr) != ERROR_SUCCESS) return 17;
+    RegCloseKey(key);
+    if (AbsentKey(root, engineRegistration)) return 18;
     const std::wstring orphan = std::wstring(backups) + L"\\missing-endpoint";
     if (RegCreateKeyExW(root, orphan.c_str(), 0, nullptr, REG_OPTION_VOLATILE,
         KEY_ALL_ACCESS, nullptr, &key, nullptr) != ERROR_SUCCESS) return 10;

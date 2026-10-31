@@ -13,6 +13,7 @@ constexpr wchar_t render[] = L"SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\MMD
 constexpr wchar_t backups[] = L"Software\\HXAudio\\Apo\\Backup";
 constexpr wchar_t components[] = L"Software\\HXAudio\\Apo\\ComponentBackup";
 constexpr wchar_t registration[] = L"Software\\Classes\\CLSID\\{C4D1BA43-C7A8-4B47-8DCF-6DCF554D0F59}";
+constexpr wchar_t engineRegistration[] = L"Software\\Classes\\AudioEngine\\AudioProcessingObjects\\{C4D1BA43-C7A8-4B47-8DCF-6DCF554D0F59}";
 inline bool AbsentKey(HKEY root, const wchar_t* path, REGSAM view = 0) {
     HKEY key = nullptr;
     LONG e = RegOpenKeyExW(root, path, 0, KEY_READ | view, &key);
