@@ -203,6 +203,10 @@ namespace HXAudioApoManager
             bool available = false;
             DWORD error = 0, stage = 0, mask = 0;
             std::wstring endpoint;
+            DWORD exitCode = 0;
+            DWORD win32Known = 0;
+            std::wstring phase;
+            DWORD rollbackStatus = 0; // 0 not attempted, 1 old restored, 2 fallback attempted, 3 old restore failed
         };
 
         SERVICE_STATUS_HANDLE g_statusHandle = nullptr;
@@ -1759,11 +1763,6 @@ namespace HXAudioApoManager
         {
             static const std::vector<std::wstring> modes{
                 kDefaultProcessingMode,
-                kCommunicationsProcessingMode,
-                kSpeechProcessingMode,
-                kNotificationProcessingMode,
-                kMediaProcessingMode,
-                kMovieProcessingMode,
             };
             return modes;
         }
@@ -1775,11 +1774,10 @@ namespace HXAudioApoManager
             if (!QueryRaw(key, name, type, data)) return false;
             const auto modes = DecodeStrings(type, data);
             const auto& required = RequiredRenderProcessingModes();
-            return std::all_of(required.begin(), required.end(),
-                [&](const std::wstring& requiredMode)
-                {
-                    return ContainsInsensitive(modes, requiredMode);
-                });
+            // EFX is downstream of the mode mix. Windows specifies only
+            // DEFAULT for PKEY_EFX_ProcessingModes_Supported_For_Streaming.
+            return type == REG_MULTI_SZ && modes.size() == 1 &&
+                required.size() == 1 && _wcsicmp(modes[0].c_str(), required[0].c_str()) == 0;
         }
 
         DWORD RestoreEndpoint(HKEY renderRoot, const std::wstring& endpoint,
@@ -2892,6 +2890,10 @@ namespace HXAudioApoManager
         {
             if (!diagnostic.available) return false;
             return SetDword(key, L"ApoInstallFailureValid", 0) &&
+                SetDword(key, L"ApoInstallFailureExitCode", diagnostic.exitCode) &&
+                SetDword(key, L"ApoInstallFailureWin32Known", diagnostic.win32Known) &&
+                SetRegistryStringValue(key, L"ApoInstallFailurePhase", diagnostic.phase) &&
+                SetDword(key, L"ApoInstallFailureRollbackStatus", diagnostic.rollbackStatus) &&
                 SetDword(key, L"ApoInstallFailureError", diagnostic.error) &&
                 SetDword(key, L"ApoInstallFailureStage", diagnostic.stage) &&
                 SetDword(key, L"ApoInstallFailureMask", diagnostic.mask) &&
@@ -2992,10 +2994,23 @@ namespace HXAudioApoManager
     int InstallWithMode(const wchar_t* dllPath, const wchar_t* finalMode,
         const wchar_t* installingMode)
     {
+        InstallFailureDiagnostic installFailure{};
+        if (!SetSettingsDword(L"ApoInstallFailureValid", 0))
+            std::wcerr << L"Unable to invalidate previous install diagnostic." << std::endl;
+        const auto reportFailure = [&](int code, const wchar_t* phase) {
+            installFailure.available = true;
+            installFailure.exitCode = static_cast<DWORD>(code);
+            installFailure.phase = phase;
+            if (!SaveInstallFailureDiagnostic(installFailure))
+                std::wcerr << L"Unable to save install failure diagnostic." << std::endl;
+            std::wcerr << L"HXAudio install failed: exit=" << code << L", phase=" << phase << std::endl;
+            return code;
+        };
         wchar_t fullPath[MAX_PATH]{};
         if (!dllPath || !GetFullPathNameW(dllPath, ARRAYSIZE(fullPath), fullPath, nullptr))
-            return 40;
-        if (GetFileAttributesW(fullPath) == INVALID_FILE_ATTRIBUTES) return 40;
+            return reportFailure(40, L"validate-path");
+        if (GetFileAttributesW(fullPath) == INVALID_FILE_ATTRIBUTES)
+            return reportFailure(40, L"validate-file");
         const std::wstring oldDll = ReadString(HKEY_LOCAL_MACHINE, kApoPath, L"DllPath");
         const std::wstring oldMode = ReadString(HKEY_LOCAL_MACHINE,
             kSettingsPath, L"InstallationMode");
@@ -3025,49 +3040,47 @@ namespace HXAudioApoManager
         // Always stop an older guard process before replacing its registration.
         // This also makes an in-place APO upgrade load the just-installed binary.
         const int stopResult = StopServiceOnly();
-        if (stopResult != 0) return stopResult;
+        if (stopResult != 0) return reportFailure(stopResult, L"stop-guard");
         bool migratedSettings = false;
         if (!MigrateStoredDspGainRange(migratedSettings))
         {
             std::wcerr << L"Unable to migrate stored preamp/PEQ gains into the supported ranges.";
-            return 45;
+            return reportFailure(45, L"migrate-settings");
         }
         const HRESULT registration = CallDllExport(fullPath, "DllRegisterServer");
         if (FAILED(registration))
         {
             std::wcerr << L"Unable to register HXAudio APO: 0x" << std::hex << registration;
-            return 41;
+            return reportFailure(41, L"register-apo");
         }
         if (!SetString(HKEY_LOCAL_MACHINE, kApoPath, L"DllPath", fullPath) ||
             !SetString(HKEY_LOCAL_MACHINE, kSettingsPath, L"InstallationMode",
                 installingMode))
         {
-            restorePreviousApo();
-            return 42;
+            reportFailure(42, L"write-install-state");
+            installFailure.rollbackStatus = restorePreviousApo() ? 1u : 3u;
+            return reportFailure(42, L"write-install-state");
         }
 
         ClearGuardStatus();
-        if (!SetSettingsDword(L"ApoInstallFailureValid", 0))
-            std::wcerr << L"Unable to invalidate previous install diagnostic." << std::endl;
         if (!SetSettingsDword(L"ApoForceAudioRestart", 1))
         {
-            restorePreviousApo();
-            return 44;
+            reportFailure(44, L"force-restart-flag");
+            installFailure.rollbackStatus = restorePreviousApo() ? 1u : 3u;
+            return reportFailure(44, L"force-restart-flag");
         }
         DWORD baseline = 0;
-        InstallFailureDiagnostic installFailure{};
         int serviceResult = StartOperationService(kOperationApply, baseline);
         if (serviceResult == 0)
             serviceResult = WaitForOperation(baseline, kGuardReady, 90000, &installFailure);
         if (serviceResult != 0)
         {
-            // Save before rollback as well as after it: rollback may fail or
-            // the process may be interrupted while restoring the previous APO.
-            if (installFailure.available && !SaveInstallFailureDiagnostic(installFailure))
-                std::wcerr << L"Unable to preserve install failure diagnostic before rollback." << std::endl;
+            installFailure.win32Known = installFailure.available ? 1u : 0u;
+            reportFailure(serviceResult, serviceResult == 56 ? L"verify-guard" :
+                serviceResult == 57 ? L"guard-timeout" : L"start-guard");
             // A covering install is a two-version transaction: keep the old
             // registered APO active unless the new graph reaches GuardReady.
-            RunFailedInstallRollback(restorePreviousApo, [&]()
+            const bool previousRestored = RunFailedInstallRollback(restorePreviousApo, [&]()
             {
                 DWORD restoreBaseline = ReadSettingsDword(
                     L"ApoOperationSerial", 0);
@@ -3092,12 +3105,12 @@ namespace HXAudioApoManager
                             L"InstallationMode", oldMode);
                 }
             });
-            if (installFailure.available && !SaveInstallFailureDiagnostic(installFailure))
-                std::wcerr << L"Unable to preserve install failure diagnostic in registry." << std::endl;
-            return serviceResult;
+            installFailure.rollbackStatus = previousRestored ? 1u : 2u;
+            return reportFailure(serviceResult, serviceResult == 56 ? L"verify-guard" :
+                serviceResult == 57 ? L"guard-timeout" : L"start-guard");
         }
         if (!SetString(HKEY_LOCAL_MACHINE, kSettingsPath, L"InstallationMode", finalMode))
-            return 43;
+            return reportFailure(43, L"commit-mode");
         const DWORD count = ReadSettingsDword(L"ApoAttachedEndpoints", 0);
         DeleteUnusedApoDlls(fullPath, fullPath);
         std::wcout << L"HXAudio APO installed on " << count << L" render endpoints.";
@@ -3531,6 +3544,15 @@ namespace HXAudioApoManager
                     result = 82;
                 }
             }
+            const auto extraModes = EncodeMultiString({kDefaultProcessingMode, kMediaProcessingMode});
+            bool modeOk = RegSetValueExW(fx, kEfxProcessingModesValue, 0, REG_MULTI_SZ,
+                extraModes.data(), static_cast<DWORD>(extraModes.size())) == ERROR_SUCCESS &&
+                !ProcessingModesCoverRenderModes(fx, kEfxProcessingModesValue);
+            const auto singleMode = EncodeMultiString({kDefaultProcessingMode});
+            modeOk = modeOk && RegSetValueExW(fx, kEfxProcessingModesValue, 0, REG_MULTI_SZ,
+                singleMode.data(), static_cast<DWORD>(singleMode.size())) == ERROR_SUCCESS &&
+                ProcessingModesCoverRenderModes(fx, kEfxProcessingModesValue);
+            if (!modeOk) result = 92;
             EndpointSummary applied{}, verified{};
             applied.succeeded = 1;
             verified.failed = 1; verified.firstError = ERROR_NOT_FOUND;
@@ -3572,13 +3594,20 @@ namespace HXAudioApoManager
                 [&]() { ++clean; });
             if (restored || previous != 2 || clean != 1) result = 89;
 
-            const InstallFailureDiagnostic failure{true, ERROR_NOT_FOUND, kStageVerify, 33, L"fake-endpoint"};
+            InstallFailureDiagnostic failure{true, ERROR_NOT_FOUND, kStageVerify, 33, L"fake-endpoint"};
+            failure.exitCode = 56; failure.win32Known = 1;
+            failure.phase = L"verify-guard"; failure.rollbackStatus = 2;
             // Simulate rollback writing new guard state before saving original failure.
             ok = SetDword(root, L"ApoLastError", ERROR_SUCCESS) &&
                 WriteInstallFailureDiagnostic(root, failure);
             DWORD savedError = 0, savedStage = 0, savedMask = 0, guardError = 1, valid = 0;
-            std::wstring savedEndpoint;
+            DWORD savedExit = 0, savedKnown = 0, savedRollback = 0;
+            std::wstring savedEndpoint, savedPhase;
             ok = ok && QueryDword(root, L"ApoInstallFailureValid", valid) && valid == 1 &&
+                QueryDword(root, L"ApoInstallFailureExitCode", savedExit) && savedExit == 56 &&
+                QueryDword(root, L"ApoInstallFailureWin32Known", savedKnown) && savedKnown == 1 &&
+                QueryDword(root, L"ApoInstallFailureRollbackStatus", savedRollback) && savedRollback == 2 &&
+                QueryRegistryStringValue(root, L"ApoInstallFailurePhase", savedPhase) && savedPhase == L"verify-guard" &&
                 QueryDword(root, L"ApoInstallFailureError", savedError) &&
                 QueryDword(root, L"ApoInstallFailureStage", savedStage) &&
                 QueryDword(root, L"ApoInstallFailureMask", savedMask) &&
