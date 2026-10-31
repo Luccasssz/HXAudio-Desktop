@@ -25,12 +25,13 @@ void operator delete[](void* p,size_t) noexcept { std::free(p); }
 text += f'#include "{(root / "Shared/HXAudioDspHeadroom.h").as_posix()}"\n'
 text += source[source.index('    enum class PeqFilterType'):source.index('    std::vector<PeqBand> g_peqEditorBands')]
 text += source[source.index('    struct BiquadCoefficients'):source.index('    struct StaticGainOriginal')]
-for file in ['Shared/HXAudioBridgePeakGuard.h', 'Shared/HXAudioBridgeRealtimeDsp.h', 'tests/bridge_realtime_tests.h', 'tests/small_speaker_tests.h', 'tests/clean_bass_tests.h']:
+for file in ['Shared/HXAudioBridgePeakGuard.h', 'Shared/HXAudioBridgeRealtimeDsp.h', 'tests/bridge_realtime_tests.h', 'tests/small_speaker_tests.h', 'tests/clean_bass_tests.h', 'tests/clean_bass_punch_tests.h']:
     text += f'#include "{(root / file).as_posix()}"\n'
 text += '''
 int main() {
     if(RunSmallSpeakerTests()) return 30;
     if(RunCleanBassTests()) return 31;
+    if(RunCleanBassPunchTests()) return 32;
     const int result=RunBridgeRealtimeTests();
     if(result) return result;
     HXAudioBridgeDsp::Control control;
@@ -40,7 +41,7 @@ int main() {
     countAllocations=true;
     for(int i=0;i<10000;++i) {
         p.frequencyHz=20+(i*71)%19981; p.peqGainDb=i%25-12; p.q=0.1+(i%100)/10.0;
-        p.amount=(i%101)/100.0; p.enabled=i%2!=0; p.smallSpeaker=i%3!=0; p.cleanBass=i%5==0; p.gainDb=-double(i%25); p.revision=i+1;
+        p.amount=(i%101)/100.0; p.enabled=i%2!=0; p.smallSpeaker=i%3!=0; p.cleanBass=i%5==0; p.punchDb=double(i%7); p.gainDb=-double(i%25); p.revision=i+1;
         control.requests.Push(p); dsp.Process(block.data(),128);
         HXAudioBridgeDsp::Status status; control.status.Latest(status);
     }
