@@ -28,6 +28,15 @@ try {
     Test-Command 'driver update' @('driver-update') 0
     Test-Command 'driver mismatch' @('run') 5
     Test-Command 'driver values retained' @('check-installed') 0
+    Test-Command 'missing endpoint init' @('init') 0
+    Test-Command 'missing endpoint change' @('remove-device') 0
+    Test-Command 'missing endpoint refusal' @('run') 5
+    Test-Command 'missing endpoint values retained' @('check-installed') 0
+    Test-Command 'permission init' @('init') 0
+    Test-Command 'permission denied' @('run-deny') 4
+    Test-Command 'permission values retained' @('check-installed') 0
+    Test-Command 'permission retry' @('run') 0
+    Test-Command 'permission archive' @('check') 0
     Test-Command 'conflict init' @('init') 0
     Test-Command 'conflict change' @('conflict') 0
     Test-Command 'conflict refusal' @('run') 1

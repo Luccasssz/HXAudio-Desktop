@@ -87,7 +87,7 @@ int wmain(int argc, wchar_t** argv) {
             RegSetValueExW(root, L"DriverVersion", 0, REG_DWORD, reinterpret_cast<BYTE*>(&version), sizeof(version)) != ERROR_SUCCESS) result = 4;
         for (const auto& p : record.properties) if (!adapter.WriteValue(p.name, p.installed)) result = 4;
         if (RegFlushKey(root) != ERROR_SUCCESS) result = 4;
-    } else if (command == L"run") {
+    } else if (command == L"run" || command == L"run-deny") {
         std::vector<uint8_t> persisted;
         if (!GetBytes(root, L"Record", persisted) || !DecodeRecord(persisted, record) ||
             !GetBytes(root, L"Fingerprint", record.fingerprint)) {
@@ -95,6 +95,11 @@ int wmain(int argc, wchar_t** argv) {
         }
         if (argc >= 3) adapter.crashSave = _wtoi(argv[2]);
         if (argc >= 4) adapter.crashWrite = _wtoi(argv[3]);
+        if (command == L"run-deny") {
+            RegCloseKey(values); values = nullptr;
+            if (RegOpenKeyExW(root, L"FixtureValues", 0, KEY_QUERY_VALUE, &values) != ERROR_SUCCESS) { RegCloseKey(root); return 4; }
+            adapter.values = values;
+        }
         result = static_cast<int>(Run(record, adapter));
     } else if (command == L"driver-update") {
         DWORD version = 2;
@@ -103,6 +108,8 @@ int wmain(int argc, wchar_t** argv) {
         if (!SetBytes(root, L"Fingerprint", {1,2,3})) result = 4;
     } else if (command == L"corrupt-record") {
         if (!SetBytes(root, L"Record", {1,0,0,0,255})) result = 4;
+    } else if (command == L"remove-device") {
+        if (RegDeleteValueW(root, L"DriverVersion") != ERROR_SUCCESS) result = 4;
     } else if (command == L"conflict") {
         if (!SetBytes(values, L"effect", {99})) result = 4;
     } else if (command == L"check") {
