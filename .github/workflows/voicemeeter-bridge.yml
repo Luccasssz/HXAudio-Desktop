@@ -58,17 +58,27 @@ jobs:
           if (!$iscc) { throw 'Inno compiler missing' }
           & $iscc Installer/HXAudioBridge.iss 2>&1 | Tee-Object bridge-inno.log
           if ($LASTEXITCODE -ne 0) { throw 'Installer compilation failed' }
-          Get-FileHash artifacts/HXAudio-Voicemeeter-Bridge-experimental-x64.exe -Algorithm SHA256 | Format-List | Out-File bridge-sha256.log
+          Get-FileHash artifacts/HXAudio-Voicemeeter-Bridge-*-x64.exe -Algorithm SHA256 | Format-List | Out-File bridge-sha256.log
       - name: Test installer and uninstaller in temporary directory
         shell: pwsh
         run: |
-          $setup = (Resolve-Path artifacts/HXAudio-Voicemeeter-Bridge-experimental-x64.exe).Path
+          $setup = (Resolve-Path artifacts/HXAudio-Voicemeeter-Bridge-*-x64.exe).Path
           $base = Join-Path $env:RUNNER_TEMP ('hxaudio-bridge-' + [guid]::NewGuid().ToString('N'))
           $app = Join-Path $base 'app'; New-Item -ItemType Directory -Force $base | Out-Null
           $sentinel = Join-Path $base 'unrelated.txt'; Set-Content $sentinel 'preserve'
           $p = Start-Process $setup -ArgumentList @('/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART',"/DIR=`"$app`"", "/LOG=`"$base\install.log`"") -Wait -PassThru
           "install exit code: $($p.ExitCode)" | Tee-Object bridge-installer-tests.log -Append
           if ($p.ExitCode -ne 0 -or !(Test-Path "$app\HXAudioBridge.exe")) { throw 'Install test failed' }
+          $binary = Join-Path $app 'HXAudioBridge.exe'
+          $version = (Get-Item $binary).VersionInfo.ProductVersion
+          if ($version -notlike "0.1.0-dev+$($env:GITHUB_SHA.Substring(0,7)).*") { throw 'Installed EXE identity mismatch' }
+          $running = Start-Process $binary -PassThru
+          try {
+            $deadline = (Get-Date).AddSeconds(15)
+            do { Start-Sleep -Milliseconds 100; $running.Refresh() } until ($running.MainWindowTitle -or (Get-Date) -gt $deadline)
+            if ($running.MainWindowTitle -ne "HXAudio Voicemeeter Bridge $version") { throw "Title mismatch: $($running.MainWindowTitle)" }
+            "Installed version=$version; title=$($running.MainWindowTitle)" | Tee-Object bridge-version-check.log
+          } finally { if (!$running.HasExited) { $running.CloseMainWindow() | Out-Null; $running.WaitForExit(10000) | Out-Null } }
           $un = Join-Path $app 'unins000.exe'
           $p = Start-Process $un -ArgumentList @('/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART',"/LOG=`"$base\uninstall.log`"") -Wait -PassThru
           "uninstall exit code: $($p.ExitCode)" | Tee-Object bridge-installer-tests.log -Append
@@ -82,7 +92,7 @@ jobs:
           if-no-files-found: warn
           retention-days: 30
           path: |
-            artifacts/HXAudio-Voicemeeter-Bridge-experimental-x64.exe
+            artifacts/HXAudio-Voicemeeter-Bridge-*-x64.exe
             docs/VOICEMEETER_BRIDGE.md
             bridge-*.log
             bridge-small-speaker-spectrum.csv

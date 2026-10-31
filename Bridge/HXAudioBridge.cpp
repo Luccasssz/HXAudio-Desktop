@@ -1,3 +1,4 @@
+#include "BuildVersion.h"
 // Dedicated entry point: the legacy control panel entry point is never called.
 // Reuse its DSP, loopback conversion and output worker without its routing policy.
 #define wWinMain HXAudioLegacyEntryPoint
@@ -376,7 +377,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR commandLine, int show) 
     g_cpu = DetectCpuTopology();
     WNDCLASSW cls{}; cls.lpfnWndProc=bridge::Proc; cls.hInstance=instance; cls.lpszClassName=L"HXAudioVoiceMeeterBridge";
     cls.hCursor=LoadCursorW(nullptr,IDC_ARROW); cls.hbrBackground=reinterpret_cast<HBRUSH>(COLOR_WINDOW+1); RegisterClassW(&cls);
-    HWND window=CreateWindowW(cls.lpszClassName,L"HXAudio Voicemeeter Bridge (实验版)",WS_OVERLAPPED|WS_CAPTION|WS_SYSMENU|WS_MINIMIZEBOX,
+    HWND window=CreateWindowW(cls.lpszClassName,HX_WINDOW_TITLE,WS_OVERLAPPED|WS_CAPTION|WS_SYSMENU|WS_MINIMIZEBOX,
         CW_USEDEFAULT,CW_USEDEFAULT,660,680,nullptr,nullptr,instance,nullptr);
     if (!window) { CoUninitialize(); CloseHandle(mutex); return 3; }
     if (args.find(L"--realtime-ui-self-test") != std::wstring::npos) {
