@@ -176,7 +176,9 @@ void Stop() {
     liveControl.reset(); pendingPublish=false;
 }
 bool Number(HWND w, int id, double minimum, double maximum, double& value) {
-    wchar_t text[64]{}; GetDlgItemTextW(w, id, text, ARRAYSIZE(text)); wchar_t* end = nullptr;
+    wchar_t text[64]{};
+    if (GetWindowTextLengthW(GetDlgItem(w,id)) >= static_cast<int>(ARRAYSIZE(text))) return false;
+    GetDlgItemTextW(w, id, text, ARRAYSIZE(text)); wchar_t* end = nullptr;
     value = wcstod(text, &end); return end != text && *end == 0 && end[-1] != L'.' && std::isfinite(value) && value >= minimum && value <= maximum;
 }
 bool ReadDsp(HWND w, HXAudioBridgeDsp::Parameters& p) {
@@ -284,7 +286,7 @@ LRESULT CALLBACK Proc(HWND w, UINT msg, WPARAM wp, LPARAM lp) {
             HXAudioBridgeDsp::Status applied;
             if (liveControl->status.Latest(applied)) {
                 wchar_t text[350]{};
-                swprintf_s(text,L"当前 DSP：前级 %.1f dB / 低频 %.1f%% / 启用混合 %.0f%%\nPEQ %.1f Hz / %.1f dB / Q %.2f；参数 #%llu %s",applied.gainDb,applied.amount*100,applied.enableMix*100,applied.peqHz,applied.peqDb,applied.peqQ,static_cast<unsigned long long>(applied.target.revision),applied.transitioning?L"平滑过渡中":L"已应用");
+                swprintf_s(text,L"当前 DSP：前级 %.1f dB / 低频 %.1f%%（%s）\nPEQ %.1f Hz / %.1f dB / Q %.2f；%s",applied.gainDb,applied.amount*100,applied.enableMix==0?L"关闭":applied.enableMix==1?L"开启":L"切换中",applied.peqHz,applied.peqDb,applied.peqQ,applied.transitioning?L"平滑过渡中":L"已应用");
                 HXAudioBridgeDsp::Parameters edited;
                 if (ReadDsp(w,edited)) SetWindowTextW(appliedText,text);
             }

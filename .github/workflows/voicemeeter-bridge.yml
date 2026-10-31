@@ -46,7 +46,8 @@ jobs:
           $command = "`"$dev`" -arch=x64 && cl /nologo /std:c++17 /EHsc /O2 /Zi /fsanitize=address /Fe:realtime-harness.exe realtime-harness.cpp /link /INCREMENTAL:NO"
           & cmd.exe /d /s /c $command 2>&1 | Tee-Object bridge-realtime-asan-build.log
           if ($LASTEXITCODE -ne 0) { throw 'ASan harness build failed' }
-          & .\realtime-harness.exe 2>&1 | Tee-Object bridge-realtime-asan.log
+          $runCommand = "`"$dev`" -arch=x64 && realtime-harness.exe"
+          & cmd.exe /d /s /c $runCommand 2>&1 | Tee-Object bridge-realtime-asan.log
           if ($LASTEXITCODE -ne 0) { throw "ASan/allocation checks failed: $LASTEXITCODE" }
       - name: Compile independent user-mode installer
         shell: pwsh
