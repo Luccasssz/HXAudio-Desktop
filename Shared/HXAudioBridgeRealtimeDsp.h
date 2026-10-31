@@ -43,6 +43,7 @@ private:
 struct Parameters {
     double gainDb = -6, frequencyHz = 1000, peqGainDb = 0, q = 0.9;
     double amount = 0.15;
+    double makeupDb = 0.0; // Optional output loudness trim; 0 dB is transparent.
     bool enabled = false;
     bool smallSpeaker = false;
     uint64_t revision = 0;
@@ -52,18 +53,19 @@ inline bool Valid(const Parameters& p) noexcept {
         std::isfinite(p.frequencyHz) && p.frequencyHz >= 20 && p.frequencyHz <= 20000 &&
         std::isfinite(p.peqGainDb) && p.peqGainDb >= -12 && p.peqGainDb <= 12 &&
         std::isfinite(p.q) && p.q >= 0.1 && p.q <= 10 &&
-        std::isfinite(p.amount) && p.amount >= 0 && p.amount <= 1;
+        std::isfinite(p.amount) && p.amount >= 0 && p.amount <= 1 &&
+        std::isfinite(p.makeupDb) && p.makeupDb >= 0 && p.makeupDb <= 6;
 }
 inline bool SameValues(const Parameters& a, const Parameters& b) noexcept {
     return a.gainDb == b.gainDb && a.frequencyHz == b.frequencyHz &&
-        a.peqGainDb == b.peqGainDb && a.q == b.q && a.amount == b.amount && a.enabled == b.enabled && a.smallSpeaker == b.smallSpeaker;
+        a.peqGainDb == b.peqGainDb && a.q == b.q && a.amount == b.amount && a.enabled == b.enabled && a.smallSpeaker == b.smallSpeaker && a.makeupDb == b.makeupDb;
 }
 inline bool SamePeq(const Parameters& a, const Parameters& b) noexcept {
     return a.frequencyHz == b.frequencyHz && a.peqGainDb == b.peqGainDb && a.q == b.q;
 }
 struct Status {
     Parameters target;
-    double gainDb = -6, amount = 0.15, enableMix = 0;
+    double gainDb = -6, makeupDb = 0, amount = 0.15, enableMix = 0;
     double peqHz = 1000, peqDb = 0, peqQ = 0.9;
     bool transitioning = false;
 };
@@ -118,6 +120,7 @@ public:
         m_control = control; m_target = Valid(initial) ? initial : Parameters{};
         m_peqTarget = m_target; m_active = 0; m_fadePosition = m_fadeFrames;
         m_gain.Reset(std::pow(10.0, m_target.gainDb / 20));
+        m_makeup.Reset(std::pow(10.0, m_target.makeupDb / 20));
         m_amount.Reset(m_target.amount); m_enabled.Reset(m_target.enabled ? 1 : 0);
         m_speakerMix.Reset(m_target.smallSpeaker ? 1 : 0);
         m_smallSpeaker.Configure(m_rate,m_channels);
@@ -132,6 +135,7 @@ public:
         if (m_control && m_control->requests.Latest(next) && Valid(next)) {
             m_target = next;
             m_gain.Set(std::pow(10.0, next.gainDb / 20), m_rampFrames);
+            m_makeup.Set(std::pow(10.0, next.makeupDb / 20), m_rampFrames);
             m_amount.Set(next.amount, m_rampFrames);
             m_enabled.Set(next.enabled ? 1 : 0, m_rampFrames);
             m_speakerMix.Set(next.smallSpeaker ? 1 : 0,m_rampFrames);
@@ -141,7 +145,7 @@ public:
             m_peqTarget = m_target; m_fadePosition = 0;
         }
         for (UINT32 frame = 0; frame < frames; ++frame) {
-            const double gain = m_gain.Next(), amount = m_amount.Next(), speakerMix=m_speakerMix.Next();
+            const double gain = m_gain.Next(), makeup = m_makeup.Next(), amount = m_amount.Next(), speakerMix=m_speakerMix.Next();
             // At 0%, bypass all bass processing. Keep the internal bass filters
             // warm, including while disabled, so rapid toggles never revive stale state.
             const double mix = m_enabled.Next() * std::min(1.0, amount / 0.01);
@@ -158,7 +162,9 @@ public:
                 const float bass=static_cast<float>(legacy+speakerMix*(optimized-legacy));
                 const float input = static_cast<float>((dry + mix * (bass - dry)) * gain);
                 const float a = m_peq[m_active].Process(input, c);
-                samples[i] = fade ? static_cast<float>(a + blend * (m_peq[1-m_active].Process(input, c) - a)) : a;
+                const float filtered = fade ? static_cast<float>(a + blend * (m_peq[1-m_active].Process(input, c) - a)) : a;
+                // Applied after bass/PEQ, before the existing two-stage Bridge peak guard.
+                samples[i] = static_cast<float>(filtered * makeup);
             }
             if (fade && ++m_fadePosition == m_fadeFrames) m_active = 1 - m_active;
         }
@@ -166,9 +172,10 @@ public:
     }
     Status CurrentStatus() const noexcept {
         Status s; s.target=m_target; s.gainDb=20*std::log10(m_gain.current);
+        s.makeupDb=20*std::log10(m_makeup.current);
         s.amount=m_amount.current; s.enableMix=m_enabled.current;
         s.peqHz=m_peqTarget.frequencyHz; s.peqDb=m_peqTarget.peqGainDb; s.peqQ=m_peqTarget.q;
-        s.transitioning=Fading() || m_gain.remaining || m_amount.remaining || m_enabled.remaining || m_speakerMix.remaining || !SamePeq(m_target,m_peqTarget);
+        s.transitioning=Fading() || m_gain.remaining || m_makeup.remaining || m_amount.remaining || m_enabled.remaining || m_speakerMix.remaining || !SamePeq(m_target,m_peqTarget);
         return s;
     }
 private:
@@ -179,7 +186,7 @@ private:
     UINT32 m_rate=48000, m_channels=0, m_rampFrames=960, m_fadeFrames=1440, m_fadePosition=1440;
     int m_active=0;
     Parameters m_target, m_peqTarget;
-    Ramp m_gain, m_amount, m_enabled, m_speakerMix;
+    Ramp m_gain, m_makeup, m_amount, m_enabled, m_speakerMix;
     SmallSpeakerBassProcessor m_smallSpeaker;
     VirtualBassProcessor m_bass;
     PeqBank m_peq[2];
