@@ -182,6 +182,29 @@ namespace HXAudioApoManager
             summary = verified;
         }
 
+        // Shared by the real guard and deterministic offline fault injection.
+        template<class Attempt> bool RunApplyAttempts(Attempt attempt)
+        {
+            for (DWORD i = 0; i < 5; ++i)
+                if (attempt(i)) return true;
+            return false;
+        }
+
+        template<class RestorePrevious, class RestoreClean>
+        bool RunFailedInstallRollback(RestorePrevious previous, RestoreClean clean)
+        {
+            if (previous()) return true;
+            clean();
+            return false;
+        }
+
+        struct InstallFailureDiagnostic
+        {
+            bool available = false;
+            DWORD error = 0, stage = 0, mask = 0;
+            std::wstring endpoint;
+        };
+
         SERVICE_STATUS_HANDLE g_statusHandle = nullptr;
         SERVICE_STATUS g_status{};
         HANDLE g_stopEvent = nullptr;
@@ -2539,7 +2562,7 @@ namespace HXAudioApoManager
             }
             bool forceAudioRestart = ConsumeForceAudioRestart();
             bool endpointStackRebuilt = false;
-            for (DWORD attempt = 0; attempt < 5; ++attempt)
+            const bool applied = RunApplyAttempts([&](DWORD attempt)
             {
                 bool changed = false;
                 bool endpointChanged = false;
@@ -2548,7 +2571,7 @@ namespace HXAudioApoManager
                     &endpointChanged, &componentChanged))
                 {
                     if (attempt != 4) Sleep(300);
-                    continue;
+                    return false;
                 }
                 bool restarted = true;
                 if (endpointChanged && !endpointStackRebuilt)
@@ -2564,7 +2587,7 @@ namespace HXAudioApoManager
                 {
                     error = ERROR_SERVICE_NOT_ACTIVE;
                     if (attempt != 4) Sleep(300);
-                    continue;
+                    return false;
                 }
                 std::wstring volumeFailure;
                 if ((changed || forceAudioRestart) &&
@@ -2576,7 +2599,7 @@ namespace HXAudioApoManager
                     summary.failureStage = kStageEndpointVolume;
                     summary.failureEndpoint = volumeFailure;
                     if (attempt != 4) Sleep(300);
-                    continue;
+                    return false;
                 }
                 if (changed || forceAudioRestart)
                 {
@@ -2588,13 +2611,18 @@ namespace HXAudioApoManager
                 if (EnumerateEndpoints(false, verified, ignoredChanged, error))
                 {
                     summary = verified;
-                    WriteGuardStatus(kGuardReady, ERROR_SUCCESS, &summary, true);
-                    return ERROR_SUCCESS;
+                    return true;
                 }
                 // Preserve the *verification* failure. Otherwise a successful
                 // ApplyEndpoint summary overwrites its stage, endpoint, and
                 // failed count with zeros when verification returns 1168.
                 PreserveVerificationSummary(summary, verified);
+                return false;
+            });
+            if (applied)
+            {
+                WriteGuardStatus(kGuardReady, ERROR_SUCCESS, &summary, true);
+                return ERROR_SUCCESS;
             }
             WriteGuardStatus(kGuardError, error, &summary, true);
             return error;
@@ -2860,7 +2888,30 @@ namespace HXAudioApoManager
             return running ? 0 : 54;
         }
 
-        int WaitForOperation(DWORD baselineSerial, DWORD expectedState, DWORD timeout)
+        bool WriteInstallFailureDiagnostic(HKEY key, const InstallFailureDiagnostic& diagnostic)
+        {
+            if (!diagnostic.available) return false;
+            return SetDword(key, L"ApoInstallFailureValid", 0) &&
+                SetDword(key, L"ApoInstallFailureError", diagnostic.error) &&
+                SetDword(key, L"ApoInstallFailureStage", diagnostic.stage) &&
+                SetDword(key, L"ApoInstallFailureMask", diagnostic.mask) &&
+                SetRegistryStringValue(key, L"ApoInstallFailureEndpoint", diagnostic.endpoint) &&
+                SetDword(key, L"ApoInstallFailureValid", 1);
+        }
+
+        bool SaveInstallFailureDiagnostic(const InstallFailureDiagnostic& diagnostic)
+        {
+            HKEY key = nullptr;
+            if (!diagnostic.available || RegCreateKeyExW(HKEY_LOCAL_MACHINE, kSettingsPath,
+                0, nullptr, 0, KEY_SET_VALUE | KEY_WOW64_64KEY, nullptr, &key,
+                nullptr) != ERROR_SUCCESS) return false;
+            const bool ok = WriteInstallFailureDiagnostic(key, diagnostic);
+            RegCloseKey(key);
+            return ok;
+        }
+
+        int WaitForOperation(DWORD baselineSerial, DWORD expectedState, DWORD timeout,
+            InstallFailureDiagnostic* failure = nullptr)
         {
             const ULONGLONG deadline = GetTickCount64() + timeout;
             while (GetTickCount64() < deadline)
@@ -2878,6 +2929,7 @@ namespace HXAudioApoManager
                         const DWORD mask = ReadSettingsDword(L"ApoVerifyFailureMask", 0);
                         const std::wstring endpoint = ReadString(HKEY_LOCAL_MACHINE,
                             kSettingsPath, L"ApoFailureEndpoint");
+                        if (failure) *failure = { true, error, stage, mask, endpoint };
                         // Print the actionable ASCII fields before any
                         // localized Win32 text, which can break wcerr output.
                         std::wcerr << L"HXAudio APO failed: Win32=" << error
@@ -2995,20 +3047,23 @@ namespace HXAudioApoManager
         }
 
         ClearGuardStatus();
+        if (!SetSettingsDword(L"ApoInstallFailureValid", 0))
+            std::wcerr << L"Unable to invalidate previous install diagnostic." << std::endl;
         if (!SetSettingsDword(L"ApoForceAudioRestart", 1))
         {
             restorePreviousApo();
             return 44;
         }
         DWORD baseline = 0;
+        InstallFailureDiagnostic installFailure{};
         int serviceResult = StartOperationService(kOperationApply, baseline);
         if (serviceResult == 0)
-            serviceResult = WaitForOperation(baseline, kGuardReady, 90000);
+            serviceResult = WaitForOperation(baseline, kGuardReady, 90000, &installFailure);
         if (serviceResult != 0)
         {
             // A covering install is a two-version transaction: keep the old
             // registered APO active unless the new graph reaches GuardReady.
-            if (!restorePreviousApo())
+            RunFailedInstallRollback(restorePreviousApo, [&]()
             {
                 DWORD restoreBaseline = ReadSettingsDword(
                     L"ApoOperationSerial", 0);
@@ -3032,7 +3087,9 @@ namespace HXAudioApoManager
                         SetString(HKEY_LOCAL_MACHINE, kSettingsPath,
                             L"InstallationMode", oldMode);
                 }
-            }
+            });
+            if (installFailure.available && !SaveInstallFailureDiagnostic(installFailure))
+                std::wcerr << L"Unable to preserve install failure diagnostic in registry." << std::endl;
             return serviceResult;
         }
         if (!SetString(HKEY_LOCAL_MACHINE, kSettingsPath, L"InstallationMode", finalMode))
@@ -3496,12 +3553,42 @@ namespace HXAudioApoManager
             ok = ok && RestoreValue(backup, fx, L"missingValue", L"Missing", changed) &&
                 changed && ValueIsAbsent(fx, L"missingValue");
             if (!ok && !result) result = 84;
+
+            int attempts = 0;
+            bool retry = RunApplyAttempts([&](DWORD) { return ++attempts == 3; });
+            if (!retry || attempts != 3) result = 86;
+            attempts = 0;
+            retry = RunApplyAttempts([&](DWORD) { ++attempts; return false; });
+            if (retry || attempts != 5) result = 87;
+            int previous = 0, clean = 0;
+            bool restored = RunFailedInstallRollback([&]() { ++previous; return true; },
+                [&]() { ++clean; });
+            if (!restored || previous != 1 || clean != 0) result = 88;
+            restored = RunFailedInstallRollback([&]() { ++previous; return false; },
+                [&]() { ++clean; });
+            if (restored || previous != 2 || clean != 1) result = 89;
+
+            const InstallFailureDiagnostic failure{true, ERROR_NOT_FOUND, kStageVerify, 33, L"fake-endpoint"};
+            // Simulate rollback writing new guard state before saving original failure.
+            ok = SetDword(root, L"ApoLastError", ERROR_SUCCESS) &&
+                WriteInstallFailureDiagnostic(root, failure);
+            DWORD savedError = 0, savedStage = 0, savedMask = 0, guardError = 1, valid = 0;
+            std::wstring savedEndpoint;
+            ok = ok && QueryDword(root, L"ApoInstallFailureValid", valid) && valid == 1 &&
+                QueryDword(root, L"ApoInstallFailureError", savedError) &&
+                QueryDword(root, L"ApoInstallFailureStage", savedStage) &&
+                QueryDword(root, L"ApoInstallFailureMask", savedMask) &&
+                QueryDword(root, L"ApoLastError", guardError) &&
+                QueryRegistryStringValue(root, L"ApoInstallFailureEndpoint", savedEndpoint) &&
+                savedError == ERROR_NOT_FOUND && savedStage == kStageVerify && savedMask == 33 &&
+                savedEndpoint == L"fake-endpoint" && guardError == ERROR_SUCCESS;
+            if (!ok) result = 90;
         }
         if (backup) RegCloseKey(backup);
         if (fx) RegCloseKey(fx);
         RegCloseKey(root);
         if (RegDeleteTreeW(HKEY_CURRENT_USER, path.c_str()) != ERROR_SUCCESS && !result) result = 85;
-        if (!result) std::wcout << L"64 verify masks, verification summary copy, and registry backup/restore passed.\n";
+        if (!result) std::wcout << L"64 masks, registry backup/restore, retry, rollback selection, and failure preservation passed.\n";
         return result;
     }
 

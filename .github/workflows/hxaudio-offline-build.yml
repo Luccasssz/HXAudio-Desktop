@@ -75,15 +75,21 @@ jobs:
           Test-Executable 'dsp' $control '--dsp-self-test'
           Test-Executable 'apo' $helper "apo-self-test `"$apo`""
 
+      - name: Sign disposable diagnostic copies and check trust
+        timeout-minutes: 5
+        shell: pwsh
+        run: ./.github/scripts/package-diagnostic.ps1
+
       - name: Upload offline build evidence (unsigned, NOT for installation)
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: hxaudio-offline-evidence-unsigned
           if-no-files-found: warn
-          retention-days: 5
+          retention-days: 30
           path: |
             hxaudio-*.log
+            HXAudio-CI-Diagnostic-UNTRUSTED.zip
             ControlPanel/x64/Release/HXAudioControl.exe
             DriverSetup/x64/Release/HXAudioDriverSetup.exe
             Apo/x64/Release/HXAudioApo.dll
