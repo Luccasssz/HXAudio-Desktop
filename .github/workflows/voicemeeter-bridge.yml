@@ -2,7 +2,7 @@ name: Voicemeeter Bridge experimental
 on:
   workflow_dispatch:
   push:
-    branches: ["bridge/voicemeeter"]
+    branches: ["bridge/voicemeeter", "bridge/clean-bass-lab"]
 permissions:
   contents: read
 jobs:
@@ -30,7 +30,7 @@ jobs:
         shell: pwsh
         run: |
           $exe = (Resolve-Path Bridge/x64/Release/HXAudioBridge.exe).Path
-          foreach ($arg in @('--dsp-self-test','--bridge-self-test','--virtual-bass-self-test','--realtime-dsp-self-test','--realtime-ui-self-test','--small-speaker-self-test')) {
+          foreach ($arg in @('--dsp-self-test','--bridge-self-test','--virtual-bass-self-test','--realtime-dsp-self-test','--realtime-ui-self-test','--small-speaker-self-test','--clean-bass-self-test')) {
             $p = Start-Process $exe -ArgumentList $arg -Wait -PassThru
             "$arg exit code: $($p.ExitCode)" | Tee-Object bridge-tests.log -Append
             if ($p.ExitCode -ne 0) { throw "$arg failed" }
@@ -96,4 +96,6 @@ jobs:
             docs/VOICEMEETER_BRIDGE.md
             bridge-*.log
             bridge-small-speaker-spectrum.csv
+            bridge-clean-bass-spectrum.csv
             speaker-ab/*.wav
+            clean-bass-ab/*.wav
