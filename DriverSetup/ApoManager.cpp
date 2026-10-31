@@ -26,6 +26,7 @@
 #include <cwctype>
 #include <iostream>
 #include <string>
+#include <sstream>
 #include <vector>
 
 namespace HXAudioApoManager
@@ -3680,6 +3681,36 @@ namespace HXAudioApoManager
                 return VerifyEndpoint(root, L"endpoint", failStage, failMask) == ERROR_SUCCESS;
             });
             if (!ok || !eventuallyApplied || runs != 3) result = 91;
+        }
+        // Exercise the real install entrypoint's earliest failure without
+        // privileges or audio changes, redirecting HKLM to this disposable HKCU
+        // tree before calling it. The null path exits before any service/DLL work.
+        HKEY fakeSettings = nullptr;
+        const LONG settingsCreated = RegCreateKeyExW(root, L"Software\\HXAudio\\VirtualAudio",
+            0, nullptr, REG_OPTION_VOLATILE, KEY_ALL_ACCESS, nullptr, &fakeSettings, nullptr);
+        if (settingsCreated != ERROR_SUCCESS) { if (!result) result = 93; }
+        else
+        {
+            const LONG overrideResult = RegOverridePredefKey(HKEY_LOCAL_MACHINE, root);
+            if (overrideResult != ERROR_SUCCESS) { if (!result) result = 94; }
+            else
+            {
+                std::wostringstream captured;
+                auto* oldBuffer = std::wcerr.rdbuf(captured.rdbuf());
+                const int installExit = InstallWithMode(nullptr, L"APO", L"APO-Installing");
+                std::wcerr.rdbuf(oldBuffer);
+                const LONG resetResult = RegOverridePredefKey(HKEY_LOCAL_MACHINE, nullptr);
+                DWORD validInstall = 0, recordedExit = 0, knownWin32 = 1;
+                std::wstring phase;
+                const bool recorded = QueryDword(fakeSettings, L"ApoInstallFailureValid", validInstall) &&
+                    QueryDword(fakeSettings, L"ApoInstallFailureExitCode", recordedExit) &&
+                    QueryDword(fakeSettings, L"ApoInstallFailureWin32Known", knownWin32) &&
+                    QueryRegistryStringValue(fakeSettings, L"ApoInstallFailurePhase", phase);
+                if ((resetResult != ERROR_SUCCESS || installExit != 40 || !recorded ||
+                    validInstall != 1 || recordedExit != 40 || knownWin32 != 0 || phase != L"validate-path" ||
+                    captured.str().find(L"exit=40") == std::wstring::npos) && !result) result = 95;
+            }
+            RegCloseKey(fakeSettings);
         }
         if (backup) RegCloseKey(backup);
         if (fx) RegCloseKey(fx);
