@@ -3037,6 +3037,36 @@ namespace HXAudioApoManager
             return rollback == 0;
         };
 
+        const auto rollbackAppliedInstall = [&]() {
+            // A covering install is a two-version transaction: keep the old
+            // registered APO active unless the new graph reaches GuardReady.
+            return RunFailedInstallRollback(restorePreviousApo, [&]()
+            {
+                DWORD restoreBaseline = ReadSettingsDword(
+                    L"ApoOperationSerial", 0);
+                if (StartOperationService(kOperationRestore,
+                    restoreBaseline) == 0)
+                    WaitForOperation(restoreBaseline, kGuardStopped, 90000);
+                RemoveService();
+                CallDllExport(fullPath, "DllUnregisterServer");
+                if (!hadWorkingApo)
+                {
+                    RegDeleteTreeW(HKEY_LOCAL_MACHINE, kApoPath);
+                    HKEY settings = nullptr;
+                    if (RegOpenKeyExW(HKEY_LOCAL_MACHINE, kSettingsPath, 0,
+                        KEY_SET_VALUE | KEY_WOW64_64KEY, &settings) == ERROR_SUCCESS)
+                    {
+                        RegDeleteValueW(settings, L"InstallationMode");
+                        RegDeleteValueW(settings, L"ApoForceAudioRestart");
+                        RegCloseKey(settings);
+                    }
+                    if (!oldMode.empty())
+                        SetString(HKEY_LOCAL_MACHINE, kSettingsPath,
+                            L"InstallationMode", oldMode);
+                }
+            });
+        };
+
         // Always stop an older guard process before replacing its registration.
         // This also makes an in-place APO upgrade load the just-installed binary.
         const int stopResult = StopServiceOnly();
@@ -3078,39 +3108,17 @@ namespace HXAudioApoManager
             installFailure.win32Known = installFailure.available ? 1u : 0u;
             reportFailure(serviceResult, serviceResult == 56 ? L"verify-guard" :
                 serviceResult == 57 ? L"guard-timeout" : L"start-guard");
-            // A covering install is a two-version transaction: keep the old
-            // registered APO active unless the new graph reaches GuardReady.
-            const bool previousRestored = RunFailedInstallRollback(restorePreviousApo, [&]()
-            {
-                DWORD restoreBaseline = ReadSettingsDword(
-                    L"ApoOperationSerial", 0);
-                if (StartOperationService(kOperationRestore,
-                    restoreBaseline) == 0)
-                    WaitForOperation(restoreBaseline, kGuardStopped, 90000);
-                RemoveService();
-                CallDllExport(fullPath, "DllUnregisterServer");
-                if (!hadWorkingApo)
-                {
-                    RegDeleteTreeW(HKEY_LOCAL_MACHINE, kApoPath);
-                    HKEY settings = nullptr;
-                    if (RegOpenKeyExW(HKEY_LOCAL_MACHINE, kSettingsPath, 0,
-                        KEY_SET_VALUE | KEY_WOW64_64KEY, &settings) == ERROR_SUCCESS)
-                    {
-                        RegDeleteValueW(settings, L"InstallationMode");
-                        RegDeleteValueW(settings, L"ApoForceAudioRestart");
-                        RegCloseKey(settings);
-                    }
-                    if (!oldMode.empty())
-                        SetString(HKEY_LOCAL_MACHINE, kSettingsPath,
-                            L"InstallationMode", oldMode);
-                }
-            });
+            const bool previousRestored = rollbackAppliedInstall();
             installFailure.rollbackStatus = previousRestored ? 1u : 2u;
             return reportFailure(serviceResult, serviceResult == 56 ? L"verify-guard" :
                 serviceResult == 57 ? L"guard-timeout" : L"start-guard");
         }
         if (!SetString(HKEY_LOCAL_MACHINE, kSettingsPath, L"InstallationMode", finalMode))
+        {
+            reportFailure(43, L"commit-mode");
+            installFailure.rollbackStatus = rollbackAppliedInstall() ? 1u : 2u;
             return reportFailure(43, L"commit-mode");
+        }
         const DWORD count = ReadSettingsDword(L"ApoAttachedEndpoints", 0);
         DeleteUnusedApoDlls(fullPath, fullPath);
         std::wcout << L"HXAudio APO installed on " << count << L" render endpoints.";
