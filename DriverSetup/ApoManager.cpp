@@ -3015,6 +3015,7 @@ namespace HXAudioApoManager
     int InstallWithMode(const wchar_t* dllPath, const wchar_t* finalMode,
         const wchar_t* installingMode)
     {
+        (void)finalMode; (void)installingMode;
         InstallFailureDiagnostic installFailure{};
         if (!SetSettingsDword(L"ApoInstallFailureValid", 0))
             std::wcerr << L"Unable to invalidate previous install diagnostic." << std::endl;
@@ -3738,9 +3739,13 @@ namespace HXAudioApoManager
                 L"{001897d5-add1-4c31-90fd-34b06b8e7ee4},100", L"{90609662-991c-4873-ba68-8ff2d57b230b},100",
                 L"{90705486-cfcc-4d2f-9671-b62846279a2c},100", L"{90c0662b-e145-49d8-a0c1-670d079442be},100"
             };
+            const std::wstring associationValues[] = {
+                L"SWD\\DRIVERENUM\\DOLBYAPO_DAX3APOSVC",
+                L"SWD\\DRIVERENUM\\ELEVOCAPO",
+                L"SWD\\DRIVERENUM\\REALTEKAPO"
+            };
             for (size_t i = 0; i < ARRAYSIZE(associations); ++i)
-                ok = ok && SetRegistryStringValue(fx, associations[i], i < 4 ? L"SWD\\DRIVERENUM\\DOLBYAPO_DAX3APOSVC" :
-                    i == 4 ? L"SWD\\DRIVERENUM\\ELEVOCAPO" : L"SWD\\DRIVERENUM\\REALTEKAPO");
+                ok = ok && SetRegistryStringValue(fx, associations[i], associationValues[i < 4 ? 0 : i == 4 ? 1 : 2]);
             DWORD rebuiltStage = 0, rebuiltMask = 0;
             ok = ok && VerifyEndpoint(root, L"endpoint", rebuiltStage, rebuiltMask) == ERROR_NOT_FOUND &&
                 rebuiltStage == kStageVerify && rebuiltMask == (8u | 16u | 32u);
@@ -3760,10 +3765,10 @@ namespace HXAudioApoManager
                 ok = ok && QueryRaw(fx, item.name, actualType, actual) && actualType == REG_MULTI_SZ &&
                     actual == EncodeMultiString(item.values);
             }
-            for (const auto* name : associations) {
+            for (size_t i = 0; i < ARRAYSIZE(associations); ++i) {
                 std::wstring association;
-                ok = ok && QueryRegistryStringValue(fx, name, association) &&
-                    StartsWithInsensitive(association, L"SWD\\DRIVERENUM\\");
+                ok = ok && QueryRegistryStringValue(fx, associations[i], association) &&
+                    association == associationValues[i < 4 ? 0 : i == 4 ? 1 : 2];
             }
             if (!ok) result = 96;
         }
