@@ -9,6 +9,7 @@
 #include "../Shared/HXAudioBridgeRealtimeDsp.h"
 #include "../tests/bridge_realtime_tests.h"
 #include "../tests/small_speaker_tests.h"
+#include "../tests/clean_bass_tests.h"
 
 namespace bridge {
 constexpr int kSource = 4101, kTarget = 4102, kRefresh = 4103, kStart = 4104,
@@ -370,6 +371,7 @@ int RealtimeUiTest(HWND window) {
 
 int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR commandLine, int show) {
     const std::wstring args = commandLine ? commandLine : L"";
+    if (args.find(L"--clean-bass-self-test") != std::wstring::npos) return RunCleanBassTests();
     if (args.find(L"--small-speaker-self-test") != std::wstring::npos) return RunSmallSpeakerTests();
     if (args.find(L"--realtime-dsp-self-test") != std::wstring::npos) return RunBridgeRealtimeTests();
     if (args.find(L"--virtual-bass-self-test") != std::wstring::npos) return RunVirtualBassRegressionTests();
