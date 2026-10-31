@@ -102,11 +102,11 @@ inline int RunCleanBassTests() {
                     target[mode]+=v*v;
                 }
             }
-            if(fundamental[1]<0.85*(0.5*std::pow(10.0,-6.0/20.0))) return 6;
-            if(target[1]<target[0]*0.08) return 7;
             log << "fundamental=" << frequency << " at=" << sampleRate
                 << " retention=" << fundamental[1]/(0.5*std::pow(10.0,-6.0/20.0))
                 << " targetB/A=" << target[1]/std::max(target[0],1e-20) << '\n';
+            if(fundamental[1]<0.85*(0.5*std::pow(10.0,-6.0/20.0))) return 6;
+            if(target[1]<target[0]*0.08) return 7;
         }
     }
 
