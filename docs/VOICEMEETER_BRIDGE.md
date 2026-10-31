@@ -71,6 +71,24 @@ quality. Test on the real PC starting at 15% and compare the diagnostic counters
 with Virtual Bass off/on before increasing strength.
 
 
+## Optional output makeup (experimental)
+
+Bridge provides a separate live **compensation dB** field, 0..+6 dB,
+default 0 dB (disabled / unity gain). It is applied after the existing
+small-speaker bass synthesis and PEQ, and before both established sample
+peak guards. Changes ramp smoothly over approximately 20 ms without
+reopening WASAPI devices. The DSP readout reports the actually applied
+makeup gain. This is a static trim for loudness comparisons, NOT an
+automatic LUFS normalizer, lookahead limiter, or compressor. A positive
+trim may activate soft protection more often and affect transient
+dynamics. Do not use extra gain to compensate for a muted output; start
+with +1 dB, then +2 or +3 dB at low listening level. Observe DSP
+overrange, soft-protection, hard-clips, and render underrun counters.
+
+The new optional branch keeps the validated small-speaker mode at its
+existing levels. No changes to WASAPI routing, APO, driver, Voicemeeter
+device configuration, or installer payload structure.
+
 ## Live DSP controls (2026-10-31)
 
 The Start routing-confirmation dialog is removed. A permanent, non-modal warning
