@@ -3061,6 +3061,10 @@ namespace HXAudioApoManager
             serviceResult = WaitForOperation(baseline, kGuardReady, 90000, &installFailure);
         if (serviceResult != 0)
         {
+            // Save before rollback as well as after it: rollback may fail or
+            // the process may be interrupted while restoring the previous APO.
+            if (installFailure.available && !SaveInstallFailureDiagnostic(installFailure))
+                std::wcerr << L"Unable to preserve install failure diagnostic before rollback." << std::endl;
             // A covering install is a two-version transaction: keep the old
             // registered APO active unless the new graph reaches GuardReady.
             RunFailedInstallRollback(restorePreviousApo, [&]()
