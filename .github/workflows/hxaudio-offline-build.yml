@@ -94,6 +94,13 @@ jobs:
           restore-plan-tests.exe > hxaudio-restore-plan-tests.log 2>&1
           if errorlevel 1 exit /b 1
           type hxaudio-restore-plan-tests.log
+          cl /nologo /EHsc /std:c++17 /W4 /WX tests\cleanup_registry_tests.cpp /Fe:cleanup-registry-tests.exe advapi32.lib
+          if errorlevel 1 exit /b 1
+          cleanup-registry-tests.exe > hxaudio-cleanup-registry-tests.log 2>&1
+          if errorlevel 1 exit /b 1
+          type hxaudio-cleanup-registry-tests.log
+          cl /nologo /EHsc /std:c++17 /W4 /WX tests\inno_mock_helper.cpp /Fe:inno-mock-helper.exe
+          if errorlevel 1 exit /b 1
 
       - name: Compile production Inno script and run isolated uninstall fixture
         shell: pwsh
@@ -111,6 +118,13 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'Inno fixture compilation failed' }
           & pwsh -NoProfile -File .github/scripts/test-inno-fixture.ps1
           if ($LASTEXITCODE -ne 0) { throw 'Inno fixture test failed' }
+          Copy-Item inno-mock-helper.exe artifacts/apo-staging/HXAudioControl.exe -Force
+          Copy-Item inno-mock-helper.exe artifacts/apo-staging/HXAudioDriverSetup.exe -Force
+          Set-Content artifacts/apo-staging/HXAudioApo.dll 'isolated dummy; not a DLL'
+          & $iscc /DUninstallHarness /DMyAppVersion=0.0.0-harness /DMyApoFileName=HXAudioApo.dll Installer/HXAudioApoOnly.iss 2>&1 | Tee-Object hxaudio-production-harness-compile.log
+          if ($LASTEXITCODE -ne 0) { throw 'Production Inno harness compilation failed' }
+          & pwsh -NoProfile -File .github/scripts/test-production-uninstaller.ps1
+          if ($LASTEXITCODE -ne 0) { throw 'Production Inno harness test failed' }
           Get-ChildItem artifacts -Filter '*.exe' -File | Remove-Item -Force
 
       - name: Upload offline build evidence (unsigned, NOT for installation)

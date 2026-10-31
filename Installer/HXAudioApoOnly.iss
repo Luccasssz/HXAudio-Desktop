@@ -6,7 +6,11 @@
 #endif
 
 [Setup]
+#ifdef UninstallHarness
+AppId={{274FBF47-FF51-4953-9941-F67AE1CE9CC3}
+#else
 AppId={{7FD886C3-0B66-4D5D-A045-9EF09623B416}
+#endif
 AppName=HXAudio Desktop (APO)
 AppVersion={#MyAppVersion}
 AppPublisher=Huber Lab
@@ -15,7 +19,11 @@ DefaultGroupName=HXAudio
 DisableProgramGroupPage=yes
 UninstallDisplayName=HXAudio Desktop (APO)
 UninstallDisplayIcon={app}\HXAudio.ico
+#ifdef UninstallHarness
+PrivilegesRequired=lowest
+#else
 PrivilegesRequired=admin
+#endif
 SetupArchitecture=x64
 ArchitecturesAllowed=x64os
 ArchitecturesInstallIn64BitMode=x64os
@@ -47,6 +55,7 @@ Source: "..\artifacts\apo-staging\{#MyApoFileName}"; DestDir: "{app}"; Flags: ig
 Source: "..\artifacts\apo-staging\HXAudioControl.exe"; DestDir: "{tmp}"; DestName: "HXAudioApoControlPolicy.exe"; Flags: dontcopy
 Source: "..\artifacts\apo-staging\HXAudioDriverSetup.exe"; DestDir: "{tmp}"; DestName: "HXAudioApoSetupPolicy.exe"; Flags: dontcopy
 
+#ifndef UninstallHarness
 [InstallDelete]
 ; PrepareToInstall has already stopped these binaries before this list runs.
 Type: files; Name: "{app}\HXAudioControl.exe"
@@ -61,15 +70,19 @@ Type: files; Name: "{group}\HXAudio 控制面板.lnk"
 Type: files; Name: "{autodesktop}\HXAudio 控制面板.lnk"
 Type: files; Name: "{group}\HXAudio Desktop.lnk"
 Type: files; Name: "{autodesktop}\HXAudio Desktop.lnk"
+#endif
 
 [UninstallDelete]
+#ifndef UninstallHarness
 Type: files; Name: "{autodesktop}\HXAudio Desktop.lnk"
 Type: files; Name: "{group}\HXAudio Desktop.lnk"
 Type: files; Name: "{autodesktop}\HXAudio 控制面板.lnk"
 Type: files; Name: "{group}\HXAudio 控制面板.lnk"
 Type: files; Name: "{group}\卸载 HXAudio Desktop.lnk"
+#endif
 Type: filesandordirs; Name: "{app}"
 
+#ifndef UninstallHarness
 [Registry]
 Root: HKLM64; Subkey: "Software\HXAudio\VirtualAudio"; Permissions: users-modify
 Root: HKLM64; Subkey: "Software\HXAudio\VirtualAudio\DspNotify"; ValueType: dword; ValueName: "Generation"; ValueData: "0"; Permissions: users-modify
@@ -82,6 +95,7 @@ Name: "{autodesktop}\HXAudio 控制面板"; Filename: "{app}\HXAudioControl.exe"
 
 [Run]
 Filename: "{app}\HXAudioControl.exe"; Description: "启动 HXAudio 控制面板"; Flags: nowait postinstall skipifsilent
+#endif
 
 [Code]
 var
@@ -143,12 +157,14 @@ procedure RemoveLegacyCertificate();
 var
   ExitCode: Integer;
 begin
+#ifndef UninstallHarness
   ExecWithNativeSysDir(ExpandConstant('{sys}\certutil.exe'),
     '-delstore TrustedPublisher "HXAudio Virtual Audio Personal Test"',
     '', SW_HIDE, ewWaitUntilTerminated, ExitCode);
   ExecWithNativeSysDir(ExpandConstant('{sys}\certutil.exe'),
     '-delstore Root "HXAudio Virtual Audio Personal Test"',
     '', SW_HIDE, ewWaitUntilTerminated, ExitCode);
+#endif
 end;
 
 function PrepareToInstall(var NeedsRestart: Boolean): String;
@@ -158,6 +174,9 @@ var
 begin
   Result := '';
   NeedsRestart := False;
+#ifdef UninstallHarness
+  Exit;
+#endif
   if UpgradePrepared then Exit;
 
   ExtractTemporaryFile('HXAudioApoControlPolicy.exe');
@@ -206,7 +225,9 @@ end;
 
 procedure CurStepChanged(CurStep: TSetupStep);
 begin
+#ifndef UninstallHarness
   if CurStep = ssPostInstall then InstallApoBackend();
+#endif
 end;
 
 procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
@@ -223,8 +244,7 @@ begin
   RunUninstallChecked(ControlPanel, '--shutdown-ui', '关闭 HXAudio Desktop');
   RunUninstallChecked(SetupHelper, 'engine-bypass-uninstall',
     '恢复 Windows 音频引擎的原始动态处理');
-  RunUninstallChecked(SetupHelper, 'apo-uninstall',
-    '恢复各音频设备原有的 Windows 效果链');
+  { purge owns both backend cleanups; do not invoke apo-uninstall twice. }
   RunUninstallChecked(SetupHelper, 'purge', '清理 HXAudio 系统配置');
   RemoveLegacyCertificate();
   UninstallBackendCleaned := True;

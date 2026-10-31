@@ -1,5 +1,6 @@
 #include "ApoManager.h"
 #include "SafetyLogic.h"
+#include "CleanupVerification.h"
 #include "../Apo/HXAudioApoProbe.h"
 #include "../Shared/HXAudioDspHeadroom.h"
 
@@ -3130,6 +3131,40 @@ namespace HXAudioApoManager
             L"Virtual-EffectsInstalling");
     }
 
+    // This is intentionally read-only. A marker by itself never authorizes
+    // cleanup; incomplete evidence or an unavailable component blocks it.
+    bool VerifyCompletedCleanup()
+    {
+        using namespace HXAudioCleanupVerification;
+        if (!RegistryClean(HKEY_LOCAL_MACHINE)) return false;
+        if (!AbsentKey(HKEY_LOCAL_MACHINE, registration, KEY_WOW64_64KEY) ||
+            !AbsentKey(HKEY_LOCAL_MACHINE, registration, KEY_WOW64_32KEY) ||
+            !AbsentKey(HKEY_CURRENT_USER, registration, KEY_WOW64_64KEY) ||
+            !AbsentKey(HKEY_CURRENT_USER, registration, KEY_WOW64_32KEY)) return false;
+        bool valid = false;
+        const auto componentBackups = ReadApoComponentBackups(&valid);
+        if (!valid) return false;
+        for (const auto& item : componentBackups)
+        {
+            DEVINST node = 0;
+            CONFIGRET result = CM_Locate_DevNodeW(&node,
+                const_cast<wchar_t*>(item.instanceId.c_str()), CM_LOCATE_DEVNODE_NORMAL);
+            if (result != CR_SUCCESS)
+                result = CM_Locate_DevNodeW(&node,
+                    const_cast<wchar_t*>(item.instanceId.c_str()), CM_LOCATE_DEVNODE_PHANTOM);
+            bool disabled = false;
+            if (result != CR_SUCCESS || !DevNodeDisabled(node, disabled) ||
+                disabled != item.wasDisabled) return false;
+        }
+        SC_HANDLE manager = OpenSCManagerW(nullptr, nullptr, SC_MANAGER_CONNECT);
+        if (!manager) return false;
+        SC_HANDLE service = OpenServiceW(manager, kServiceName, SERVICE_QUERY_STATUS);
+        const DWORD error = service ? ERROR_SUCCESS : GetLastError();
+        if (service) CloseServiceHandle(service);
+        CloseServiceHandle(manager);
+        return error == ERROR_SERVICE_DOES_NOT_EXIST;
+    }
+
     int Uninstall()
     {
         const std::wstring dll = ReadString(HKEY_LOCAL_MACHINE, kApoPath, L"DllPath");
@@ -3145,7 +3180,15 @@ namespace HXAudioApoManager
         // A persisted marker proves neither endpoint nor component state.
         // Until independent verification exists, fail closed and keep recovery
         // material instead of reporting an unverified successful cleanup.
-        if (cleanupComplete == 1 && dll.empty()) return 43;
+        if (cleanupComplete == 1 && dll.empty())
+        {
+            if (!VerifyCompletedCleanup()) {
+                std::wcerr << L"APO cleanup could not be independently verified; recovery data retained.";
+                return 43;
+            }
+            std::wcout << L"APO cleanup revalidated; recovery data retained.";
+            return 0;
+        }
 
         if (apoStateExists)
         {
@@ -3173,6 +3216,10 @@ namespace HXAudioApoManager
                 RegDeleteValueW(key, L"CleanupComplete"); RegCloseKey(key); return 43;
             }
             RegCloseKey(key);
+        }
+        if (!VerifyCompletedCleanup()) {
+            std::wcerr << L"APO cleanup could not be independently verified; recovery data retained.";
+            return 43;
         }
         HKEY settings = nullptr;
         if (RegOpenKeyExW(HKEY_LOCAL_MACHINE, kSettingsPath, 0,
