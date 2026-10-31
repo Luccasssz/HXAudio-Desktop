@@ -2,7 +2,7 @@ name: Voicemeeter Bridge experimental
 on:
   workflow_dispatch:
   push:
-    branches: ["bridge/voicemeeter"]
+    branches: ["bridge/voicemeeter", "bridge/loudness-trial"]
 permissions:
   contents: read
 jobs:
