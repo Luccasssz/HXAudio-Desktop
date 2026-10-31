@@ -6821,11 +6821,12 @@ namespace
     public:
         TargetWorker(std::wstring id, std::wstring name, std::wstring profileKey,
             const WAVEFORMATEX* format, DWORD bufferMs, HANDLE stopEvent,
-            HANDLE failureEvent, size_t cpuSlot, bool applyPeq = true)
+            HANDLE failureEvent, size_t cpuSlot, bool applyPeq = true,
+            bool allowProfileFallback = true)
             : m_id(std::move(id)), m_name(std::move(name)), m_bufferMs(bufferMs),
               m_stopEvent(stopEvent), m_failureEvent(failureEvent), m_cpuSlot(cpuSlot),
               m_profileKey(std::move(profileKey)),
-              m_applyPeq(applyPeq),
+              m_applyPeq(applyPeq), m_allowProfileFallback(allowProfileFallback),
               m_format(sizeof(WAVEFORMATEX) + format->cbSize),
               m_ring(std::max<size_t>(
                   static_cast<size_t>(format->nAvgBytesPerSec) * std::max<DWORD>(bufferMs * 8, 120) / 1000,
@@ -7050,7 +7051,7 @@ namespace
                 if (SUCCEEDED(hr) && (FAILED(device->GetState(&state)) ||
                     (state & DEVICE_STATE_ACTIVE) == 0))
                     hr = HRESULT_FROM_WIN32(ERROR_NOT_READY);
-                if (FAILED(hr))
+                if (FAILED(hr) && m_allowProfileFallback)
                 {
                     device.Reset();
                     ComPtr<IMMDeviceCollection> collection;
@@ -7191,6 +7192,7 @@ namespace
         HANDLE m_failureEvent = nullptr;
         size_t m_cpuSlot = 0;
         bool m_applyPeq = true;
+        bool m_allowProfileFallback = true;
         std::vector<BYTE> m_format;
         ByteRing m_ring;
         DspProcessor m_peq;

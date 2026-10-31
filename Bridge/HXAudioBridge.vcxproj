@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project DefaultTargets="Build" ToolsVersion="Current" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup Label="ProjectConfigurations"><ProjectConfiguration Include="Release|x64"><Configuration>Release</Configuration><Platform>x64</Platform></ProjectConfiguration></ItemGroup>
+  <PropertyGroup Label="Globals"><ProjectGuid>{9DF18B4F-C34A-4A1A-A6C3-8EA85AB8056C}</ProjectGuid><RootNamespace>HXAudioControl</RootNamespace><WindowsTargetPlatformVersion>10.0</WindowsTargetPlatformVersion></PropertyGroup>
+  <Import Project="..\packages\Microsoft.Windows.SDK.CPP.10.0.28000.1839\build\Microsoft.Windows.SDK.cpp.props" />
+  <Import Project="..\packages\Microsoft.Windows.SDK.CPP.x64.10.0.28000.1839\build\native\Microsoft.Windows.SDK.cpp.x64.props" />
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
+  <PropertyGroup Label="Configuration"><ConfigurationType>Application</ConfigurationType><UseDebugLibraries>false</UseDebugLibraries><PlatformToolset>v143</PlatformToolset><CharacterSet>Unicode</CharacterSet><SpectreMitigation>false</SpectreMitigation></PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.props" />
+  <PropertyGroup><OutDir>$(MSBuildProjectDirectory)\x64\Release\</OutDir><IntDir>$(MSBuildProjectDirectory)\x64\Release\obj\</IntDir><TargetName>HXAudioBridge</TargetName></PropertyGroup>
+  <ItemDefinitionGroup><ClCompile><LanguageStandard>stdcpp17</LanguageStandard><WarningLevel>Level4</WarningLevel><AdditionalOptions>/utf-8 %(AdditionalOptions)</AdditionalOptions><PreprocessorDefinitions>UNICODE;_UNICODE;WIN32_LEAN_AND_MEAN;NOMINMAX;%(PreprocessorDefinitions)</PreprocessorDefinitions></ClCompile><Link><SubSystem>Windows</SubSystem><AdditionalDependencies>ole32.lib;uuid.lib;propsys.lib;comctl32.lib;shell32.lib;advapi32.lib;avrt.lib;setupapi.lib;cfgmgr32.lib;%(AdditionalDependencies)</AdditionalDependencies></Link></ItemDefinitionGroup>
+  <ItemGroup><ClCompile Include="HXAudioBridge.cpp" /></ItemGroup>
+  <ItemGroup><ResourceCompile Include="..\ControlPanel\HXAudioControl.rc" /></ItemGroup>
+  <ItemGroup><ClInclude Include="..\ControlPanel\resource.h" /></ItemGroup>
+  <ItemGroup><Manifest Include="..\ControlPanel\HXAudioControl.manifest" /></ItemGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
+  <Import Project="..\packages\Microsoft.Windows.SDK.CPP.10.0.28000.1839\build\Microsoft.Windows.SDK.cpp.targets" />
+</Project>

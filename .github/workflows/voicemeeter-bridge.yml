@@ -1,0 +1,73 @@
+name: Voicemeeter Bridge experimental
+on:
+  workflow_dispatch:
+  push:
+    branches: ["bridge/voicemeeter"]
+permissions:
+  contents: read
+jobs:
+  build-test-package:
+    runs-on: windows-2022
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Restore Windows SDK
+        shell: pwsh
+        run: |
+          foreach ($p in @('Microsoft.Windows.SDK.CPP','Microsoft.Windows.SDK.CPP.x64')) {
+            & nuget install $p -Version 10.0.28000.1839 -OutputDirectory packages -Source https://api.nuget.org/v3/index.json -NonInteractive
+            if ($LASTEXITCODE -ne 0) { throw "SDK restore failed: $p" }
+          }
+      - name: Build x64 Release bridge
+        shell: pwsh
+        run: |
+          $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe'
+          $msbuild = & $vswhere -latest -products '*' -requires Microsoft.Component.MSBuild Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -find 'MSBuild\**\Bin\MSBuild.exe' | Select-Object -First 1
+          if (!$msbuild) { throw 'MSBuild/v143 not found' }
+          & $msbuild Bridge/HXAudioBridge.vcxproj /t:Rebuild /m /p:Configuration=Release /p:Platform=x64 /p:SpectreMitigation=false /v:minimal 2>&1 | Tee-Object bridge-build.log
+          if ($LASTEXITCODE -ne 0) { throw "Build failed: $LASTEXITCODE" }
+      - name: Run offline DSP and simulated bridge pipeline
+        shell: pwsh
+        run: |
+          $exe = (Resolve-Path Bridge/x64/Release/HXAudioBridge.exe).Path
+          foreach ($arg in @('--dsp-self-test','--bridge-self-test')) {
+            $p = Start-Process $exe -ArgumentList $arg -Wait -PassThru
+            "$arg exit code: $($p.ExitCode)" | Tee-Object bridge-tests.log -Append
+            if ($p.ExitCode -ne 0) { throw "$arg failed" }
+          }
+      - name: Compile independent user-mode installer
+        shell: pwsh
+        run: |
+          & nuget install Tools.InnoSetup -Version 7.1.0 -OutputDirectory ci-tools -Source https://api.nuget.org/v3/index.json -NonInteractive
+          if ($LASTEXITCODE -ne 0) { throw 'Inno restore failed' }
+          $iscc = Get-ChildItem ci-tools/Tools.InnoSetup.7.1.0 -Recurse -Filter ISCC.exe | Select-Object -First 1 -ExpandProperty FullName
+          if (!$iscc) { throw 'Inno compiler missing' }
+          & $iscc Installer/HXAudioBridge.iss 2>&1 | Tee-Object bridge-inno.log
+          if ($LASTEXITCODE -ne 0) { throw 'Installer compilation failed' }
+          Get-FileHash artifacts/HXAudio-Voicemeeter-Bridge-experimental-x64.exe -Algorithm SHA256 | Format-List | Out-File bridge-sha256.log
+      - name: Test installer and uninstaller in temporary directory
+        shell: pwsh
+        run: |
+          $setup = (Resolve-Path artifacts/HXAudio-Voicemeeter-Bridge-experimental-x64.exe).Path
+          $base = Join-Path $env:RUNNER_TEMP ('hxaudio-bridge-' + [guid]::NewGuid().ToString('N'))
+          $app = Join-Path $base 'app'; New-Item -ItemType Directory -Force $base | Out-Null
+          $sentinel = Join-Path $base 'unrelated.txt'; Set-Content $sentinel 'preserve'
+          $p = Start-Process $setup -ArgumentList @('/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART',"/DIR=`"$app`"", "/LOG=`"$base\install.log`"") -Wait -PassThru
+          "install exit code: $($p.ExitCode)" | Tee-Object bridge-installer-tests.log -Append
+          if ($p.ExitCode -ne 0 -or !(Test-Path "$app\HXAudioBridge.exe")) { throw 'Install test failed' }
+          $un = Join-Path $app 'unins000.exe'
+          $p = Start-Process $un -ArgumentList @('/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART',"/LOG=`"$base\uninstall.log`"") -Wait -PassThru
+          "uninstall exit code: $($p.ExitCode)" | Tee-Object bridge-installer-tests.log -Append
+          Copy-Item "$base\install.log" bridge-install.log; Copy-Item "$base\uninstall.log" bridge-uninstall.log
+          if ($p.ExitCode -ne 0 -or (Test-Path "$app\HXAudioBridge.exe") -or !(Test-Path $sentinel)) { throw 'Uninstall test failed' }
+      - name: Upload experimental installer and logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: hxaudio-voicemeeter-bridge-experimental-unsigned
+          if-no-files-found: warn
+          retention-days: 30
+          path: |
+            artifacts/HXAudio-Voicemeeter-Bridge-experimental-x64.exe
+            docs/VOICEMEETER_BRIDGE.md
+            bridge-*.log
