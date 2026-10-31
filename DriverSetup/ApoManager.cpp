@@ -3184,11 +3184,21 @@ namespace HXAudioApoManager
         // A persisted marker proves neither endpoint nor component state.
         // Until independent verification exists, fail closed and keep recovery
         // material instead of reporting an unverified successful cleanup.
-        if (cleanupComplete == 1 && dll.empty())
+        if (cleanupComplete == 1)
         {
             if (!VerifyCompletedCleanup()) {
                 std::wcerr << L"APO cleanup could not be independently verified; recovery data retained.";
                 return 43;
+            }
+            // A crash may have occurred between committing the marker and
+            // removing the path. Only clear it after re-verifying live state.
+            if (!dll.empty()) {
+                HKEY key = nullptr;
+                if (RegOpenKeyExW(HKEY_LOCAL_MACHINE, kApoPath, 0,
+                    KEY_SET_VALUE | KEY_WOW64_64KEY, &key) != ERROR_SUCCESS) return 43;
+                const LONG removed = RegDeleteValueW(key, L"DllPath");
+                RegCloseKey(key);
+                if (removed != ERROR_SUCCESS && removed != ERROR_FILE_NOT_FOUND) return 43;
             }
             std::wcout << L"APO cleanup revalidated; recovery data retained.";
             return 0;
@@ -3209,6 +3219,10 @@ namespace HXAudioApoManager
         const int removeResult = RemoveService();
         if (removeResult != 0) return removeResult;
         if (!dll.empty() && FAILED(CallDllExport(dll, "DllUnregisterServer"))) return 41;
+        if (!VerifyCompletedCleanup()) {
+            std::wcerr << L"APO cleanup could not be independently verified; recovery data retained.";
+            return 43;
+        }
         // Retain endpoint and component backups, including on partial failures.
         if (apoStateExists) {
             HKEY key = nullptr;
@@ -3220,10 +3234,6 @@ namespace HXAudioApoManager
                 RegDeleteValueW(key, L"CleanupComplete"); RegCloseKey(key); return 43;
             }
             RegCloseKey(key);
-        }
-        if (!VerifyCompletedCleanup()) {
-            std::wcerr << L"APO cleanup could not be independently verified; recovery data retained.";
-            return 43;
         }
         HKEY settings = nullptr;
         if (RegOpenKeyExW(HKEY_LOCAL_MACHINE, kSettingsPath, 0,
