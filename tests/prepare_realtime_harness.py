@@ -39,7 +39,7 @@ int main() {
     countAllocations=true;
     for(int i=0;i<10000;++i) {
         p.frequencyHz=20+(i*71)%19981; p.peqGainDb=i%25-12; p.q=0.1+(i%100)/10.0;
-        p.amount=(i%101)/100.0; p.enabled=i%2!=0; p.smallSpeaker=i%3!=0; p.gainDb=-double(i%25); p.revision=i+1;
+        p.amount=(i%101)/100.0; p.enabled=i%2!=0; p.smallSpeaker=i%3!=0; p.gainDb=-double(i%25); p.makeupDb=double(i%7); p.revision=i+1;
         control.requests.Push(p); dsp.Process(block.data(),128);
         HXAudioBridgeDsp::Status status; control.status.Latest(status);
     }
