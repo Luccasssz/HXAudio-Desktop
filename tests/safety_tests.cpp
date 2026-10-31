@@ -27,5 +27,9 @@ int main() {
     if (PlanAppend(oem,duplicate,hx,plan) || PlanRemove(oem,duplicate,hx,plan)) return 12;
     Chain recreated=oem;
     if (!PlanAppend(oem,recreated,hx,plan) || !SameChain(plan,installed)) return 13;
+    Chain invalid{L"not-a-guid"};
+    if (PlanAppend(invalid, invalid, hx, plan) || PlanRemove(invalid, invalid, hx, plan)) return 14;
+    Chain duplicateOem{oem[0], oem[0]};
+    if (PlanAppend(duplicateOem, duplicateOem, hx, plan)) return 15;
     std::cout << "PASS purge fault sequencing and CompositeFX offline planner\n";
 }

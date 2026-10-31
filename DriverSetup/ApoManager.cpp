@@ -3178,8 +3178,11 @@ namespace HXAudioApoManager
     {
         const std::wstring dll = ReadString(HKEY_LOCAL_MACHINE, kApoPath, L"DllPath");
         HKEY apoKey = nullptr;
-        const bool apoKeyExists = RegOpenKeyExW(HKEY_LOCAL_MACHINE, kApoPath, 0,
-                KEY_READ | KEY_WOW64_64KEY, &apoKey) == ERROR_SUCCESS;
+        const LONG apoKeyOpen = RegOpenKeyExW(HKEY_LOCAL_MACHINE, kApoPath, 0,
+                KEY_READ | KEY_WOW64_64KEY, &apoKey);
+        if (apoKeyOpen != ERROR_SUCCESS && apoKeyOpen != ERROR_FILE_NOT_FOUND)
+            return 43;
+        const bool apoKeyExists = apoKeyOpen == ERROR_SUCCESS;
         const bool apoStateExists = !dll.empty() || apoKeyExists;
         DWORD cleanupComplete = 0;
         if (apoKey) { QueryDword(apoKey, L"CleanupComplete", cleanupComplete); RegCloseKey(apoKey); }
