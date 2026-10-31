@@ -48,13 +48,14 @@ jobs:
           }
 
       - name: Compile without signing or packaging
+        timeout-minutes: 12
         shell: pwsh
         run: |
-          $p = Start-Process pwsh -ArgumentList '-NoProfile', '-File', '.\build.ps1', '-BuildOnly' -Wait -PassThru -NoNewWindow -RedirectStandardOutput 'hxaudio-build.log' -RedirectStandardError 'hxaudio-build-error.log'
-          Get-Content hxaudio-build.log
-          Get-Content hxaudio-build-error.log
-          "build exit code: $($p.ExitCode)" | Tee-Object -FilePath hxaudio-results.log -Append
-          if ($p.ExitCode -ne 0) { throw "Build failed: $($p.ExitCode)" }
+          $ErrorActionPreference = 'Continue'
+          & pwsh -NoProfile -File .\build.ps1 -BuildOnly 2>&1 | Tee-Object -FilePath hxaudio-build.log
+          $buildExit = $LASTEXITCODE
+          "build exit code: $buildExit" | Tee-Object -FilePath hxaudio-results.log -Append
+          if ($buildExit -ne 0) { throw "Build failed: $buildExit" }
 
       - name: Test DSP, APO, and endpoint diagnostics offline
         shell: pwsh
