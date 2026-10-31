@@ -14,6 +14,7 @@ namespace HXAudioApoManager
     int VerifyInstalled();
     int VerifyVirtualEffectsInstalled();
     int LiveTest();
+    int DiagnosticSelfTest();
     int SelfTest(const wchar_t* dllPath);
     int RunServiceDispatcher();
 }

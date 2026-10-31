@@ -173,8 +173,14 @@ namespace HXAudioApoManager
             DWORD activeSucceeded = 0;
             DWORD firstError = ERROR_SUCCESS;
             DWORD failureStage = kStageNone;
+            DWORD verifyFailureMask = 0;
             std::wstring failureEndpoint;
         };
+
+        void PreserveVerificationSummary(EndpointSummary& summary, const EndpointSummary& verified)
+        {
+            summary = verified;
+        }
 
         SERVICE_STATUS_HANDLE g_statusHandle = nullptr;
         SERVICE_STATUS g_status{};
@@ -315,6 +321,7 @@ namespace HXAudioApoManager
                 SetDword(key, L"ApoActiveEndpoints", summary->active);
                 SetDword(key, L"ApoActiveAttachedEndpoints", summary->activeSucceeded);
                 SetDword(key, L"ApoFailureStage", summary->failureStage);
+                SetDword(key, L"ApoVerifyFailureMask", summary->verifyFailureMask);
                 const auto& endpoint = summary->failureEndpoint;
                 RegSetValueExW(key, L"ApoFailureEndpoint", 0, REG_SZ,
                     reinterpret_cast<const BYTE*>(endpoint.c_str()),
@@ -341,7 +348,8 @@ namespace HXAudioApoManager
                 L"ApoGuardState", L"ApoLastError", L"ApoEnumeratedEndpoints",
                 L"ApoAttachedEndpoints", L"ApoFailedEndpoints", L"ApoActiveEndpoints",
                 L"ApoActiveAttachedEndpoints", L"ApoOperationSerial",
-                L"ApoForceAudioRestart", L"ApoFailureStage", L"ApoFailureEndpoint"
+                L"ApoForceAudioRestart", L"ApoFailureStage", L"ApoFailureEndpoint",
+                L"ApoVerifyFailureMask"
             };
             for (const auto* name : names) RegDeleteValueW(key, name);
             RegCloseKey(key);
@@ -1993,8 +2001,9 @@ namespace HXAudioApoManager
         }
 
         DWORD VerifyEndpoint(HKEY renderRoot, const std::wstring& endpoint,
-            DWORD& stage)
+            DWORD& stage, DWORD& failureMask)
         {
+            failureMask = 0;
             stage = kStageOpenFxProperties;
             HKEY fx = nullptr;
             const LONG result = OpenEndpointFx(renderRoot, endpoint,
@@ -2002,19 +2011,27 @@ namespace HXAudioApoManager
             if (result != ERROR_SUCCESS) return result;
             DWORD disabled = 1;
             QueryDword(fx, kDisableSysFxValue, disabled);
-            bool exclusive = ValueContainsOnlyApo(fx, kSingleEndpointValue) &&
-                ProcessingModesCoverRenderModes(fx,
-                    kEfxProcessingModesValue) &&
-                disabled == 0 && ExternalApoAssociationsAbsent(fx);
+            // Report independent conditions instead of hiding them behind
+            // a short-circuiting boolean expression and ERROR_NOT_FOUND.
+            if (!ValueContainsOnlyApo(fx, kSingleEndpointValue))
+                failureMask |= 1u;
+            if (!ProcessingModesCoverRenderModes(fx, kEfxProcessingModesValue))
+                failureMask |= 2u;
+            if (disabled != 0)
+                failureMask |= 4u;
+            if (!ExternalApoAssociationsAbsent(fx))
+                failureMask |= 8u;
             for (const auto& value : kEffectValues)
-                if (_wcsicmp(value.name, kSingleEndpointValue) != 0)
-                    exclusive = exclusive && ValueIsAbsent(fx, value.name);
+                if (_wcsicmp(value.name, kSingleEndpointValue) != 0 &&
+                    !ValueIsAbsent(fx, value.name))
+                    failureMask |= 16u;
             for (const auto& value : kProcessingModeValues)
-                if (_wcsicmp(value.name, kEfxProcessingModesValue) != 0)
-                    exclusive = exclusive && ValueIsAbsent(fx, value.name);
+                if (_wcsicmp(value.name, kEfxProcessingModesValue) != 0 &&
+                    !ValueIsAbsent(fx, value.name))
+                    failureMask |= 32u;
             RegCloseKey(fx);
             stage = kStageVerify;
-            return exclusive ? ERROR_SUCCESS : ERROR_NOT_FOUND;
+            return failureMask == 0 ? ERROR_SUCCESS : ERROR_NOT_FOUND;
         }
 
         DWORD VerifyEndpointDetached(HKEY renderRoot,
@@ -2086,12 +2103,13 @@ namespace HXAudioApoManager
                 if (active) ++summary.active;
                 bool endpointChanged = false;
                 DWORD endpointStage = kStageNone;
+                DWORD endpointVerifyMask = 0;
                 const DWORD endpointError = apply
                     ? (shouldAttach
                         ? ApplyEndpoint(render, endpoint, endpointChanged, endpointStage)
                         : RestoreEndpoint(render, endpoint, endpointChanged, endpointStage))
                     : (shouldAttach
-                        ? VerifyEndpoint(render, endpoint, endpointStage)
+                        ? VerifyEndpoint(render, endpoint, endpointStage, endpointVerifyMask)
                         : VerifyEndpointDetached(render, endpoint, endpointStage));
                 if (endpointError == ERROR_SUCCESS)
                 {
@@ -2109,6 +2127,7 @@ namespace HXAudioApoManager
                     {
                         summary.firstError = endpointError;
                         summary.failureStage = endpointStage;
+                        summary.verifyFailureMask = endpointVerifyMask;
                         summary.failureEndpoint = endpoint;
                     }
                 }
@@ -2572,6 +2591,10 @@ namespace HXAudioApoManager
                     WriteGuardStatus(kGuardReady, ERROR_SUCCESS, &summary, true);
                     return ERROR_SUCCESS;
                 }
+                // Preserve the *verification* failure. Otherwise a successful
+                // ApplyEndpoint summary overwrites its stage, endpoint, and
+                // failed count with zeros when verification returns 1168.
+                PreserveVerificationSummary(summary, verified);
             }
             WriteGuardStatus(kGuardError, error, &summary, true);
             return error;
@@ -2852,13 +2875,18 @@ namespace HXAudioApoManager
                     {
                         const DWORD stage = ReadSettingsDword(L"ApoFailureStage",
                             kStageNone);
+                        const DWORD mask = ReadSettingsDword(L"ApoVerifyFailureMask", 0);
                         const std::wstring endpoint = ReadString(HKEY_LOCAL_MACHINE,
                             kSettingsPath, L"ApoFailureEndpoint");
-                        std::wcerr << L"HXAudio APO endpoint operation failed: "
-                            << error << L" (" << LastErrorText(error) << L")"
-                            << L", stage " << stage;
+                        // Print the actionable ASCII fields before any
+                        // localized Win32 text, which can break wcerr output.
+                        std::wcerr << L"HXAudio APO failed: Win32=" << error
+                            << L", stage=" << stage << L", verifyMask=" << mask;
                         if (!endpoint.empty())
-                            std::wcerr << L", endpoint " << endpoint;
+                            std::wcerr << L", endpoint=" << endpoint;
+                        std::wcerr << std::endl;
+                        std::wcerr << L"Windows message: " << LastErrorText(error)
+                            << std::endl;
                         return 56;
                     }
                 }
@@ -3068,6 +3096,7 @@ namespace HXAudioApoManager
             RegDeleteValueW(settings, L"ApoForceAudioRestart");
             RegDeleteValueW(settings, L"ApoFailureStage");
             RegDeleteValueW(settings, L"ApoFailureEndpoint");
+            RegDeleteValueW(settings, L"ApoVerifyFailureMask");
             wchar_t mode[64]{};
             DWORD type = 0;
             DWORD size = sizeof(mode);
@@ -3397,6 +3426,83 @@ namespace HXAudioApoManager
         std::wcout << L"\nHXAudio APO processed valid silent packets on all "
             << streams.size() << L" active shared render endpoints.";
         return 0;
+    }
+
+    // Uses only a private, volatile HKCU key. Never enumerates real endpoints,
+    // installs an APO, controls services, or opens MMDevices.
+    int DiagnosticSelfTest()
+    {
+        const std::wstring path = L"Software\\HXAudioDiagnosticTest_" +
+            std::to_wstring(GetCurrentProcessId()) + L"_" + std::to_wstring(GetTickCount64());
+        HKEY root = nullptr, fx = nullptr, backup = nullptr;
+        int result = 0;
+        if (RegCreateKeyExW(HKEY_CURRENT_USER, path.c_str(), 0, nullptr,
+            REG_OPTION_VOLATILE, KEY_ALL_ACCESS, nullptr, &root, nullptr) != ERROR_SUCCESS)
+            return 80;
+        if (RegCreateKeyExW(root, L"endpoint\\FxProperties", 0, nullptr,
+            REG_OPTION_VOLATILE, KEY_ALL_ACCESS, nullptr, &fx, nullptr) != ERROR_SUCCESS ||
+            RegCreateKeyExW(root, L"backup", 0, nullptr, REG_OPTION_VOLATILE,
+                KEY_ALL_ACCESS, nullptr, &backup, nullptr) != ERROR_SUCCESS) result = 81;
+        if (!result)
+        {
+            const auto modes = EncodeMultiString(RequiredRenderProcessingModes());
+            for (DWORD expected = 0; expected < 64 && !result; ++expected)
+            {
+                bool ok = SetRegistryStringValue(fx, kSingleEndpointValue,
+                    (expected & 1) ? L"wrong" : kApoClsid);
+                if (expected & 2) RegDeleteValueW(fx, kEfxProcessingModesValue);
+                else ok = ok && RegSetValueExW(fx, kEfxProcessingModesValue, 0,
+                    REG_MULTI_SZ, modes.data(), static_cast<DWORD>(modes.size())) == ERROR_SUCCESS;
+                ok = ok && SetDword(fx, kDisableSysFxValue, (expected & 4) ? 1 : 0);
+                if (expected & 8) ok = ok && SetRegistryStringValue(fx, L"testAssociation", L"SWD\\DRIVERENUM\\test");
+                else RegDeleteValueW(fx, L"testAssociation");
+                if (expected & 16) ok = ok && SetRegistryStringValue(fx, kPreMixValue, L"other");
+                else RegDeleteValueW(fx, kPreMixValue);
+                if (expected & 32) ok = ok && SetRegistryStringValue(fx, kSfxProcessingModesValue, L"other");
+                else RegDeleteValueW(fx, kSfxProcessingModesValue);
+                DWORD stage = 0, mask = 0;
+                const DWORD error = VerifyEndpoint(root, L"endpoint", stage, mask);
+                if (!ok || mask != expected || stage != kStageVerify ||
+                    error != (expected ? ERROR_NOT_FOUND : ERROR_SUCCESS))
+                {
+                    std::wcerr << L"Verify case=" << expected << L" actual=" << mask
+                        << L" stage=" << stage << L" error=" << error << std::endl;
+                    result = 82;
+                }
+            }
+            EndpointSummary applied{}, verified{};
+            applied.succeeded = 1;
+            verified.failed = 1; verified.firstError = ERROR_NOT_FOUND;
+            verified.failureStage = kStageVerify; verified.verifyFailureMask = 33;
+            verified.failureEndpoint = L"test-endpoint";
+            PreserveVerificationSummary(applied, verified);
+            if (applied.failed != 1 || applied.succeeded != 0 ||
+                applied.firstError != ERROR_NOT_FOUND || applied.failureStage != kStageVerify ||
+                applied.verifyFailureMask != 33 || applied.failureEndpoint != L"test-endpoint") result = 83;
+
+            // Exercise the production backup/restore functions with exact binary
+            // type and bytes, then the originally-absent-value path.
+            const BYTE original[] = { 0, 1, 2, 255, 0 };
+            bool changed = false;
+            bool ok = RegSetValueExW(fx, L"testValue", 0, REG_BINARY, original,
+                sizeof(original)) == ERROR_SUCCESS && BackupValue(backup, fx, L"testValue", L"Sample");
+            ok = ok && SetDword(fx, L"testValue", 99) && RestoreValue(backup, fx, L"testValue", L"Sample", changed);
+            DWORD type = 0; std::vector<BYTE> bytes;
+            ok = ok && changed && QueryRaw(fx, L"testValue", type, bytes) && type == REG_BINARY &&
+                bytes == std::vector<BYTE>(original, original + sizeof(original));
+            ok = ok && BackupValue(backup, fx, L"missingValue", L"Missing") &&
+                SetDword(fx, L"missingValue", 1);
+            changed = false;
+            ok = ok && RestoreValue(backup, fx, L"missingValue", L"Missing", changed) &&
+                changed && ValueIsAbsent(fx, L"missingValue");
+            if (!ok && !result) result = 84;
+        }
+        if (backup) RegCloseKey(backup);
+        if (fx) RegCloseKey(fx);
+        RegCloseKey(root);
+        if (RegDeleteTreeW(HKEY_CURRENT_USER, path.c_str()) != ERROR_SUCCESS && !result) result = 85;
+        if (!result) std::wcout << L"64 verify masks, verification summary copy, and registry backup/restore passed.\n";
+        return result;
     }
 
     int SelfTest(const wchar_t* dllPath)

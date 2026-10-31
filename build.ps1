@@ -1,12 +1,40 @@
 [CmdletBinding()]
-param()
+param([switch]$BuildOnly)
 
 $ErrorActionPreference = 'Stop'
 $root = $PSScriptRoot
 $version = '1.0.1b'
-$msbuild = 'D:\Visual Studio\Community\MSBuild\Current\Bin\amd64\MSBuild.exe'
-$signTool = 'D:\Windows Kits\10\bin\10.0.26100.0\x64\signtool.exe'
-$inno = Join-Path $root '.tools\InnoSetup7\ISCC.exe'
+# Locate installed tools without relying on the author's machine layout.
+$vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe'
+$msbuild = $null
+if (Test-Path -LiteralPath $vswhere) {
+    $msbuild = & $vswhere -latest -products '*' -requires Microsoft.Component.MSBuild Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -find 'MSBuild\**\Bin\MSBuild.exe' | Select-Object -First 1
+}
+if (-not $msbuild) {
+    $command = Get-Command MSBuild.exe -ErrorAction SilentlyContinue
+    if ($command) { $msbuild = $command.Source }
+}
+if (-not $msbuild) { throw 'MSBuild with Visual C++ v143 tools was not found. Install Visual Studio Build Tools with Desktop development with C++.' }
+
+$signTool = $null
+$inno = $null
+if (-not $BuildOnly) {
+    $kitsRoot = (Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows Kits\Installed Roots' -ErrorAction SilentlyContinue).KitsRoot10
+    if ($kitsRoot) {
+        $signTool = Get-ChildItem -Path (Join-Path $kitsRoot 'bin\*\x64\signtool.exe') -File -ErrorAction SilentlyContinue |
+            Sort-Object { [version]$_.Directory.Parent.Name } -Descending | Select-Object -First 1 -ExpandProperty FullName
+    }
+    if (-not $signTool) { $command = Get-Command signtool.exe -ErrorAction SilentlyContinue; if ($command) { $signTool = $command.Source } }
+    $candidates = @((Join-Path $root '.tools\InnoSetup7\ISCC.exe'),
+        (Join-Path ${env:ProgramFiles(x86)} 'Inno Setup 7\ISCC.exe'),
+        (Join-Path ${env:ProgramFiles(x86)} 'Inno Setup 6\ISCC.exe'),
+        (Join-Path $env:ProgramFiles 'Inno Setup 7\ISCC.exe'),
+        (Join-Path $env:ProgramFiles 'Inno Setup 6\ISCC.exe'))
+    $inno = $candidates | Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1
+    if (-not $inno) { $command = Get-Command ISCC.exe -ErrorAction SilentlyContinue; if ($command) { $inno = $command.Source } }
+    if (-not $signTool) { throw 'Windows SDK x64 SignTool was not found.' }
+    if (-not $inno) { throw 'Inno Setup ISCC.exe was not found.' }
+}
 $artifacts = Join-Path $root 'artifacts'
 $staging = Join-Path $artifacts 'apo-staging'
 $controlProject = Join-Path $root 'ControlPanel\HXAudioControl.vcxproj'
@@ -16,7 +44,7 @@ $installerScript = Join-Path $root 'Installer\HXAudioApoOnly.iss'
 $installer = Join-Path $artifacts "HXAudio-APO-Setup-$version-x64.exe"
 $virtualInstaller = Join-Path $artifacts "HXAudio-Setup-$version-x64.exe"
 
-foreach ($required in @($msbuild, $signTool, $inno, $installerScript)) {
+foreach ($required in @($msbuild, $installerScript)) {
     if (-not (Test-Path -LiteralPath $required)) {
         throw "Required APO build input was not found: $required"
     }
@@ -27,13 +55,13 @@ if (Test-Path -LiteralPath $virtualInstaller) {
     $virtualHashBefore = (Get-FileHash -Algorithm SHA256 -LiteralPath $virtualInstaller).Hash
 }
 
-if (Test-Path -LiteralPath $staging) {
+if (-not $BuildOnly -and (Test-Path -LiteralPath $staging)) {
     Remove-Item -LiteralPath $staging -Recurse -Force
 }
-if (Test-Path -LiteralPath $installer) {
+if (-not $BuildOnly -and (Test-Path -LiteralPath $installer)) {
     Remove-Item -LiteralPath $installer -Force
 }
-New-Item -ItemType Directory -Path $staging -Force | Out-Null
+if (-not $BuildOnly) { New-Item -ItemType Directory -Path $staging -Force | Out-Null }
 
 $commonBuildArgs = @('/m', '/p:Configuration=Release', '/p:Platform=x64',
     '/p:SpectreMitigation=false', '/v:minimal')
@@ -46,6 +74,7 @@ if ($LASTEXITCODE -ne 0) { throw 'APO setup helper build failed.' }
 
 & $msbuild $apoProject '/t:Rebuild' @commonBuildArgs
 if ($LASTEXITCODE -ne 0) { throw 'Global endpoint APO build failed.' }
+if ($BuildOnly) { Write-Host 'Build complete; signing and packaging skipped.'; return }
 
 $subject = 'CN=HXAudio Desktop Internal Test'
 $certificate = Get-ChildItem Cert:\CurrentUser\My |

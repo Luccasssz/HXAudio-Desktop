@@ -1,0 +1,88 @@
+name: HXAudio APO diagnostic - offline build
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - "diagnostic/**"
+
+permissions:
+  contents: read
+
+jobs:
+  build-and-offline-test:
+    name: Windows 2022 / MSVC v143 / offline only
+    runs-on: windows-2022
+    timeout-minutes: 30
+
+    steps:
+      - name: Check out patched repository
+        uses: actions/checkout@v4
+
+      - name: Show compiler environment
+        shell: pwsh
+        run: |
+          $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe'
+          if (-not (Test-Path $vswhere)) { throw 'vswhere.exe missing' }
+          $vs = & $vswhere -latest -products '*' -requires Microsoft.Component.MSBuild Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+          if ($LASTEXITCODE -ne 0 -or -not $vs) { throw 'Compatible Visual Studio MSBuild installation not found' }
+          Write-Host "Visual Studio: $vs"
+          nuget help | Select-Object -First 2
+
+      - name: Restore pinned Windows SDK NuGet packages
+        shell: pwsh
+        run: |
+          $version = '10.0.28000.1839'
+          $source = 'https://api.nuget.org/v3/index.json'
+          foreach ($package in @('Microsoft.Windows.SDK.CPP', 'Microsoft.Windows.SDK.CPP.x64')) {
+            & nuget install $package -Version $version -OutputDirectory packages -Source $source -NonInteractive
+            if ($LASTEXITCODE -ne 0) { throw "NuGet install failed: $package" }
+          }
+          $expected = @(
+            'packages\Microsoft.Windows.SDK.CPP.10.0.28000.1839\build\Microsoft.Windows.SDK.cpp.props',
+            'packages\Microsoft.Windows.SDK.CPP.x64.10.0.28000.1839\build\native\Microsoft.Windows.SDK.cpp.x64.props',
+            'packages\Microsoft.Windows.SDK.CPP.10.0.28000.1839\build\Microsoft.Windows.SDK.cpp.targets'
+          )
+          foreach ($file in $expected) {
+            if (-not (Test-Path -LiteralPath $file)) { throw "Project SDK import missing: $file" }
+          }
+
+      - name: Compile without signing or packaging
+        shell: pwsh
+        run: |
+          $p = Start-Process pwsh -ArgumentList '-NoProfile', '-File', '.\build.ps1', '-BuildOnly' -Wait -PassThru -NoNewWindow -RedirectStandardOutput 'hxaudio-build.log' -RedirectStandardError 'hxaudio-build-error.log'
+          Get-Content hxaudio-build.log
+          Get-Content hxaudio-build-error.log
+          "build exit code: $($p.ExitCode)" | Tee-Object -FilePath hxaudio-results.log -Append
+          if ($p.ExitCode -ne 0) { throw "Build failed: $($p.ExitCode)" }
+
+      - name: Test DSP, APO, and endpoint diagnostics offline
+        shell: pwsh
+        run: |
+          $control = (Resolve-Path '.\ControlPanel\x64\Release\HXAudioControl.exe').Path
+          $helper = (Resolve-Path '.\DriverSetup\x64\Release\HXAudioDriverSetup.exe').Path
+          $apo = (Resolve-Path '.\Apo\x64\Release\HXAudioApo.dll').Path
+          Get-FileHash -Algorithm SHA256 $control, $helper, $apo | Format-List | Out-File hxaudio-hashes.log
+          function Test-Executable($name, $exe, $arguments) {
+            $p = Start-Process $exe -ArgumentList $arguments -Wait -PassThru -RedirectStandardOutput "hxaudio-$name.log" -RedirectStandardError "hxaudio-$name-error.log"
+            Get-Content "hxaudio-$name.log"
+            Get-Content "hxaudio-$name-error.log"
+            "$name exit code: $($p.ExitCode)" | Tee-Object -FilePath hxaudio-results.log -Append
+            if ($p.ExitCode -ne 0) { throw "$name failed: $($p.ExitCode)" }
+          }
+          Test-Executable 'diagnostic' $helper 'apo-diagnostic-self-test'
+          Test-Executable 'dsp' $control '--dsp-self-test'
+          Test-Executable 'apo' $helper "apo-self-test `"$apo`""
+
+      - name: Upload offline build evidence (unsigned, NOT for installation)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: hxaudio-offline-evidence-unsigned
+          if-no-files-found: warn
+          retention-days: 5
+          path: |
+            hxaudio-*.log
+            ControlPanel/x64/Release/HXAudioControl.exe
+            DriverSetup/x64/Release/HXAudioDriverSetup.exe
+            Apo/x64/Release/HXAudioApo.dll
