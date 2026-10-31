@@ -14,7 +14,7 @@
 namespace bridge {
 constexpr int kSource = 4101, kTarget = 4102, kRefresh = 4103, kStart = 4104,
     kStop = 4105, kGain = 4106, kBass = 4107, kFreq = 4108, kPeqGain = 4109,
-    kQ = 4110, kBuffer = 4111, kStatus = 4112, kBassAmount = 4113, kBassSlider = 4114, kGainSlider = 4115, kApplied = 4116, kSmallSpeaker = 4117, kCleanBass = 4118;
+    kQ = 4110, kBuffer = 4111, kStatus = 4112, kBassAmount = 4113, kBassSlider = 4114, kGainSlider = 4115, kApplied = 4116, kSmallSpeaker = 4117, kCleanBass = 4118, kPunch = 4119;
 HWND sourceBox = nullptr, targetBox = nullptr, statusText = nullptr, appliedText = nullptr;
 std::unique_ptr<HXAudioBridgeDsp::Control> liveControl;
 HXAudioBridgeDsp::Parameters desired;
@@ -188,7 +188,7 @@ bool ReadDsp(HWND w, HXAudioBridgeDsp::Parameters& p) {
     double percent=0;
     if (!Number(w,kGain,-24,0,p.gainDb) || !Number(w,kFreq,20,20000,p.frequencyHz) ||
         !Number(w,kPeqGain,-12,12,p.peqGainDb) || !Number(w,kQ,0.1,10,p.q) ||
-        !Number(w,kBassAmount,0,100,percent)) return false;
+        !Number(w,kBassAmount,0,100,percent) || !Number(w,kPunch,0,6,p.punchDb)) return false;
     p.smallSpeaker=SendDlgItemMessageW(w,kSmallSpeaker,BM_GETCHECK,0,0)==BST_CHECKED;
     p.cleanBass=SendDlgItemMessageW(w,kCleanBass,BM_GETCHECK,0,0)==BST_CHECKED;
     p.amount=percent/100; p.enabled=SendDlgItemMessageW(w,kBass,BM_GETCHECK,0,0)==BST_CHECKED;
@@ -197,7 +197,7 @@ bool ReadDsp(HWND w, HXAudioBridgeDsp::Parameters& p) {
 void UpdateLive(HWND w) {
     HXAudioBridgeDsp::Parameters p;
     if (!ReadDsp(w,p)) {
-        SetWindowTextW(appliedText,L"输入未完成或超出范围：保留上次有效参数。前级 −24…0 dB，PEQ 20…20000 Hz / ±12 dB / Q 0.1…10，低频 0…100%。");
+        SetWindowTextW(appliedText,L"输入未完成或超出范围：保留上次有效参数。前级 −24…0 dB，PEQ 20…20000 Hz / ±12 dB / Q 0.1…10，低频 0…100%，清晰低频冲击力 0…+6 dB。");
         return;
     }
     SendDlgItemMessageW(w,kBassSlider,TBM_SETPOS,TRUE,static_cast<LPARAM>(std::lround(p.amount*100)));
@@ -253,6 +253,7 @@ LRESULT CALLBACK Proc(HWND w, UINT msg, WPARAM wp, LPARAM lp) {
         Add(w,L"STATIC",L"PEQ Hz（实时）",0,15,283,130,22); Add(w,L"EDIT",L"1000",WS_BORDER|WS_TABSTOP,145,280,75,25,kFreq);
         Add(w,L"STATIC",L"dB",0,235,283,30,22); Add(w,L"EDIT",L"0",WS_BORDER|WS_TABSTOP,270,280,60,25,kPeqGain);
         Add(w,L"STATIC",L"Q",0,345,283,25,22); Add(w,L"EDIT",L"0.9",WS_BORDER|WS_TABSTOP,375,280,60,25,kQ);
+        Add(w,L"STATIC",L"低频力度 +dB",0,440,283,110,22); Add(w,L"EDIT",L"0",WS_BORDER|WS_TABSTOP,554,280,55,25,kPunch);
         appliedText=Add(w,L"STATIC",L"",0,15,318,610,65,kApplied);
         Add(w,L"STATIC",L"会话参数：输入 / 物理输出 / 缓冲需停止后修改",0,15,393,470,22);
         Add(w,L"STATIC",L"缓冲 ms",0,15,423,80,22); Add(w,L"EDIT",L"20",WS_BORDER|WS_TABSTOP,95,420,55,25,kBuffer);
@@ -276,7 +277,7 @@ LRESULT CALLBACK Proc(HWND w, UINT msg, WPARAM wp, LPARAM lp) {
     case WM_COMMAND: {
         const int id=LOWORD(wp), notification=HIWORD(wp);
         if (notification==EN_CHANGE && !syncingControls &&
-            (id==kGain || id==kFreq || id==kPeqGain || id==kQ || id==kBassAmount)) {
+            (id==kGain || id==kFreq || id==kPeqGain || id==kQ || id==kBassAmount || id==kPunch)) {
             SetTimer(w,2,60,nullptr); return 0; // debounce incomplete typing
         }
         if ((id==kBass || id==kSmallSpeaker || id==kCleanBass) && notification==BN_CLICKED) { UpdateLive(w); return 0; }
@@ -293,7 +294,7 @@ LRESULT CALLBACK Proc(HWND w, UINT msg, WPARAM wp, LPARAM lp) {
             HXAudioBridgeDsp::Status applied;
             if (liveControl->status.Latest(applied)) {
                 wchar_t text[350]{};
-                swprintf_s(text,L"当前 DSP：前级 %.1f dB / 低频 %.1f%%（%s）\nPEQ %.1f Hz / %.1f dB / Q %.2f；%s / %s / %s",applied.gainDb,applied.amount*100,applied.enableMix==0?L"关闭":applied.enableMix==1?L"开启":L"切换中",applied.peqHz,applied.peqDb,applied.peqQ,applied.transitioning?L"平滑过渡中":L"已应用",applied.target.smallSpeaker?L"小扬声器":L"原模式",applied.target.smallSpeaker?(applied.target.cleanBass?L"清晰低频试验":L"饱满低频原版"):L"—");
+                swprintf_s(text,L"当前 DSP：前级 %.1f dB / 低频 %.1f%%（%s）\nPEQ %.1f Hz / %.1f dB / Q %.2f；%s / %s / %s（力度 +%.1f dB）",applied.gainDb,applied.amount*100,applied.enableMix==0?L"关闭":applied.enableMix==1?L"开启":L"切换中",applied.peqHz,applied.peqDb,applied.peqQ,applied.transitioning?L"平滑过渡中":L"已应用",applied.target.smallSpeaker?L"小扬声器":L"原模式",applied.target.smallSpeaker?(applied.target.cleanBass?L"清晰低频试验":L"饱满低频原版"):L"—",applied.punchDb);
                 HXAudioBridgeDsp::Parameters edited;
                 if (ReadDsp(w,edited)) SetWindowTextW(appliedText,text);
             }
@@ -340,6 +341,7 @@ int RealtimeUiTest(HWND window) {
         wchar_t text[40]{}; swprintf_s(text,L"%d",20+(i*71)%19981); SetDlgItemTextW(window,kFreq,text);
         swprintf_s(text,L"%d",i%25-12); SetDlgItemTextW(window,kPeqGain,text);
         swprintf_s(text,L"%.1f",0.1+(i%100)/10.0); SetDlgItemTextW(window,kQ,text);
+        SetDlgItemTextW(window,kPunch,i%3==0?L"0":i%3==1?L"3":L"6");
         SendMessageW(window,WM_TIMER,2,0);
         SendDlgItemMessageW(window,kBass,BM_SETCHECK,i%2?BST_CHECKED:BST_UNCHECKED,0);
         SendMessageW(window,WM_COMMAND,MAKEWPARAM(kBass,BN_CLICKED),0);
@@ -350,7 +352,7 @@ int RealtimeUiTest(HWND window) {
         SendMessageW(window,WM_TIMER,1,0);
     }
     SetDlgItemTextW(window,kGain,L"-6"); SetDlgItemTextW(window,kFreq,L"1000");
-    SetDlgItemTextW(window,kPeqGain,L"3"); SetDlgItemTextW(window,kQ,L"0.9");
+    SetDlgItemTextW(window,kPeqGain,L"3"); SetDlgItemTextW(window,kQ,L"0.9"); SetDlgItemTextW(window,kPunch,L"4");
     SendDlgItemMessageW(window,kSmallSpeaker,BM_SETCHECK,BST_CHECKED,0);
     SendDlgItemMessageW(window,kCleanBass,BM_SETCHECK,BST_CHECKED,0); SetDlgItemTextW(window,kBassAmount,L"50");
     SendDlgItemMessageW(window,kBass,BM_SETCHECK,BST_CHECKED,0); SendMessageW(window,WM_TIMER,2,0);
@@ -361,7 +363,7 @@ int RealtimeUiTest(HWND window) {
     }
     finish=true; audio.join();
     valid=valid && !failed && settled.load()==finalRevision && blocks.load()>0;
-    HXAudioBridgeDsp::Parameters readback; valid=valid && ReadDsp(window,readback) && readback.amount==0.5 && readback.peqGainDb==3 && readback.smallSpeaker && readback.cleanBass;
+    HXAudioBridgeDsp::Parameters readback; valid=valid && ReadDsp(window,readback) && readback.amount==0.5 && readback.peqGainDb==3 && readback.punchDb==4 && readback.smallSpeaker && readback.cleanBass;
     SessionControls(window,false); valid=valid && IsWindowEnabled(sourceBox) && IsWindowEnabled(GetDlgItem(window,kBuffer));
     log<<(valid?"PASS":"FAIL")<<" native Win32 edit/slider/toggle events, invalid edits retained, 1000 UI sweeps with synthetic audio; blocks="<<blocks<<" settledRevision="<<settled<<" final="<<finalRevision<<". No WASAPI session opened by this test.\n";
     liveControl.reset(); return valid?0:1;
