@@ -571,7 +571,9 @@ namespace
 
     int Uninstall()
     {
-        bool ok = HXAudioEngineBypass::UninstallService() == 0;
+        const int bypassResult = HXAudioEngineBypass::UninstallService();
+        if (bypassResult != 0) return bypassResult;
+        bool ok = true;
         bool removalRequiresRestart = false;
 
         HDEVINFO set = SetupDiGetClassDevsW(nullptr, nullptr, nullptr, DIGCF_ALLCLASSES);

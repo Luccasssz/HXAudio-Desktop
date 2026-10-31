@@ -877,21 +877,23 @@ namespace HXAudioEngineBypass
     int UninstallService()
     {
         SC_HANDLE manager = OpenSCManagerW(nullptr, nullptr, SC_MANAGER_CONNECT);
-        if (!manager) return 0;
+        if (!manager) return 26;
         SC_HANDLE service = OpenServiceW(manager, kServiceName,
             SERVICE_QUERY_STATUS | SERVICE_STOP | DELETE);
         if (!service)
         {
+            const DWORD error = GetLastError();
             CloseServiceHandle(manager);
+            if (error != ERROR_SERVICE_DOES_NOT_EXIST) return 26;
             WriteStatus(0, 0, L"Engine bypass service is not installed.");
             return 0;
         }
 
         SERVICE_STATUS status{};
-        if (ControlService(service, SERVICE_CONTROL_STOP, &status) ||
-            GetLastError() == ERROR_SERVICE_NOT_ACTIVE)
-        {
-            WaitForServiceState(service, SERVICE_STOPPED, 10000);
+        const bool requested = ControlService(service, SERVICE_CONTROL_STOP, &status) ||
+            GetLastError() == ERROR_SERVICE_NOT_ACTIVE;
+        if (!requested || !WaitForServiceState(service, SERVICE_STOPPED, 10000)) {
+            CloseServiceHandle(service); CloseServiceHandle(manager); return 26;
         }
         const bool deleted = DeleteService(service) != FALSE || GetLastError() == ERROR_SERVICE_MARKED_FOR_DELETE;
         const DWORD deleteError = deleted ? ERROR_SUCCESS : GetLastError();

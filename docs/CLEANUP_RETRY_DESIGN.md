@@ -1,7 +1,7 @@
 # Cleanup retry and remaining transaction work
 
-The Inno uninstall callback calls the engine bypass cleanup and then `purge`.
-`purge` owns APO cleanup, virtual backend cleanup, and finalization in that order.
+The Inno uninstall callback calls `purge` once. `purge` owns APO cleanup,
+virtual backend cleanup (including engine bypass cleanup), and finalization in that order.
 It stops on the first error. Inno deletes files only after the callback returns.
 Recovery settings and backups are retained. A later retry must revalidate APO
 cleanup; `CleanupComplete` and an absent DLL path are not evidence by themselves.

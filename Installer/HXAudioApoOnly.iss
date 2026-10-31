@@ -242,9 +242,7 @@ begin
   SetupHelper := ExpandConstant('{app}\HXAudioDriverSetup.exe');
   RunUninstallChecked(ControlPanel, '--stop', '停止 HXAudio 音频路由');
   RunUninstallChecked(ControlPanel, '--shutdown-ui', '关闭 HXAudio Desktop');
-  RunUninstallChecked(SetupHelper, 'engine-bypass-uninstall',
-    '恢复 Windows 音频引擎的原始动态处理');
-  { purge owns both backend cleanups; do not invoke apo-uninstall twice. }
+  { purge owns both backend cleanups and engine bypass removal. }
   RunUninstallChecked(SetupHelper, 'purge', '清理 HXAudio 系统配置');
   RemoveLegacyCertificate();
   UninstallBackendCleaned := True;
