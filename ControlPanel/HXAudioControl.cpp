@@ -5698,6 +5698,12 @@ namespace
     class VirtualBassProcessor
     {
     public:
+        // Called only by the owning audio thread; does not reset or allocate filters.
+        void SetRealtimeAmount(double amount)
+        {
+            m_amount = std::isfinite(amount) ? std::clamp(amount, 0.0, 2.0) : 0.0;
+        }
+
         void Configure(double sampleRate, UINT32 channels, const DspSettings& settings)
         {
             constexpr double butterworthQ = 0.7071067811865476;

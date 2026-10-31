@@ -3,8 +3,9 @@
 This unsigned test build uses an existing Voicemeeter Input as a WASAPI loopback
 source and sends processed audio to one chosen output. It does not install an
 HXAudio driver or APO, change default audio devices, or uninstall Voicemeeter.
-It has not been verified with a real sound card and must not be treated as a
-production release.
+The user confirmed real Voicemeeter → HXAudio → Realtek playback and PEQ,
+and that the preceding bass overload fix removed the audible crackling. This
+experimental live-control revision still needs real-hardware listening validation.
 
 1. Install and configure Voicemeeter separately. Start at low volume.
 2. In Windows or in the application being tested, **manually** choose the
@@ -18,10 +19,10 @@ production release.
    bridge reports a disconnect it stops processing; manually restore the normal
    Windows output, then refresh and retry when devices return.
 5. For A/B, keep the same source, output, playback level and preamp; compare PEQ
-   at 0 dB versus a clearly audible nonzero setting. Stop and restart after
-   changing DSP controls. Toggle virtual bass separately. Listen at a safe
-   level and check the input and processed peak indicators; 100% indicates
-   clipping and the bridge clamps output to prevent out-of-range samples.
+   at 0 dB versus a clearly audible nonzero setting. Adjust DSP controls during
+   playback; they apply without reopening either audio client. Toggle virtual
+   bass separately. Listen at a safe level and inspect the separate DSP
+   overrange, soft-protection and render/capture counters.
 6. Buffer is a request in milliseconds, not measured end-to-end latency. Measure
    delay with a loopback test signal and recording on real hardware; it also
    includes Voicemeeter, Windows and device buffers. A zero input peak during
@@ -35,8 +36,8 @@ offline DSP and simulated data paths, not actual sound capture or playback.
 
 ## Virtual Bass overload fix (2026-10-31)
 
-Bridge now exposes a 0–100% bass strength field (15% default). Stop and restart
-processing to apply changes, just like the existing gain/PEQ controls. The bass
+Bridge exposes a 0–100% bass strength field and slider (15% default), now live
+during playback together with gain and PEQ. The bass
 excitation uses `tanh(low * drive)` before evaluating any harmonic polynomial;
 the wet harmonic gain is reduced by 6 dB. The legacy 0–200% DSP range remains
 supported and covered by regression tests. This is a smooth saturator, so high
@@ -68,3 +69,56 @@ CI also retains the existing DSP, pipeline and install/uninstall checks.
 These tests do not validate real Voicemeeter capture, Realtek playback or listening
 quality. Test on the real PC starting at 15% and compare the diagnostic counters
 with Virtual Bass off/on before increasing strength.
+
+
+## Live DSP controls (2026-10-31)
+
+The Start routing-confirmation dialog is removed. A permanent, non-modal warning
+explains that Voicemeeter's internal routing cannot be inspected and feedback
+cannot be guaranteed absent. Existing endpoint identity/name checks, duplicate
+router checks and disconnect errors remain. Source, physical output, buffer,
+and refresh controls are disabled while the audio session is running; these
+are the only settings here that require Stop/Start.
+
+Gain and bass strength have sliders plus numeric editors. Frequency, PEQ gain
+and Q have numeric editors. Numeric typing is debounced for 60 ms; incomplete,
+non-finite or out-of-range edits retain the last valid snapshot. The applied
+readout comes from the audio thread, including the current ramped gain, bass
+strength, enable blend, PEQ transition target, revision and transition state.
+At a full telemetry queue an update is skipped rather than blocking audio.
+
+DSP uses a fixed-capacity single-producer/single-consumer queue with acquire/
+release indices. Only the capture thread owns and mutates DSP. It consumes the
+latest valid snapshot at the next processing block boundary; the UI retries its
+latest unsent value if the queue is full. No locks, IO, filter reconstruction,
+or allocation are introduced into the DSP processing/update path.
+
+Gain, bass strength and bypass blend ramp over 20 ms. Bass filters keep running
+while bypassed to avoid stale-state transients; 0% strength fully bypasses bass.
+PEQ has two session-preallocated filter banks. The inactive bank receives new
+stable coefficients and cleared state, and is faded in with a 30 ms raised-cosine
+crossfade. Updates during a fade are coalesced until that fade finishes, then
+applied at a block boundary. Existing tanh excitation, wet gain and both peak
+guards are retained. This revision does not boost the wet signal further.
+
+Expected control latency includes UI debounce for typing, the next capture
+block, 20–30 ms transition and the existing output buffering; sliders do not
+wait for the typing debounce. No control update calls WASAPI initialization,
+Stop/Start, endpoint activation or device reopening.
+
+Validation includes the original DSP/bass/pipeline/install/uninstall tests plus:
+- `--realtime-dsp-self-test`: five sample rates, 0/15/20/30/50/100% strength,
+  full-scale bass with rapid toggles/updates, 20 ms gain convergence, full PEQ
+  ranges, invalid snapshots and concurrent transport stress with 100001 attempts.
+- `--realtime-ui-self-test`: real Win32 edit/slider/toggle message handlers with
+  a concurrent synthetic audio thread; 1000 UI sweeps, invalid typing, latest
+  target convergence, and session-control enabled/disabled behavior. It opens
+  no WASAPI client and does not prove real-hardware playback.
+- A harness extracts the actual production DSP definitions and runs the same
+  tests under Windows AddressSanitizer, then counts allocations across 10000
+  live updates (expected zero). Its memory and build results are included.
+
+Capture discontinuities are cumulative, including startup transients; a solitary
+increment is not by itself an audible fault. Render missing-data callbacks can
+also occur when the source is silent/stopped. Neither count is labeled as DSP
+clipping, nor treated as proof of a persistent hardware fault.
