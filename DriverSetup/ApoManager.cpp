@@ -2244,7 +2244,14 @@ namespace HXAudioApoManager
             HKEY fx = nullptr;
             const LONG fxOpen = OpenEndpointFx(renderRoot, endpoint,
                 KEY_QUERY_VALUE | KEY_SET_VALUE, false, &fx, &stage);
-            if (fxOpen == ERROR_FILE_NOT_FOUND) return ERROR_SUCCESS;
+            if (fxOpen == ERROR_FILE_NOT_FOUND) {
+                const std::wstring missingBackupPath = std::wstring(kBackupPath) + L"\\" + endpoint;
+                HKEY missingBackup = nullptr;
+                const LONG existing = RegOpenKeyExW(HKEY_LOCAL_MACHINE, missingBackupPath.c_str(), 0,
+                    KEY_READ | KEY_WOW64_64KEY, &missingBackup);
+                if (existing == ERROR_SUCCESS) { RegCloseKey(missingBackup); return ERROR_NOT_FOUND; }
+                return existing == ERROR_FILE_NOT_FOUND ? ERROR_SUCCESS : existing;
+            }
             if (fxOpen != ERROR_SUCCESS) return fxOpen;
 
             const std::wstring backupPath = std::wstring(kBackupPath) + L"\\" + endpoint;
@@ -3917,6 +3924,13 @@ namespace HXAudioApoManager
                             badBackupStage) == ERROR_REVISION_MISMATCH && !changedOnBadBackup;
                     } else fakeRecoveryOk = false;
                 }
+                HKEY missingEndpointBackup = nullptr;
+                if (RegCreateKeyExW(root, L"Software\\HXAudio\\Apo\\Backup\\lost", 0, nullptr,
+                    REG_OPTION_VOLATILE, KEY_ALL_ACCESS, nullptr, &missingEndpointBackup, nullptr) == ERROR_SUCCESS) {
+                    RegCloseKey(missingEndpointBackup);
+                    bool missingChanged = false; DWORD missingStage = 0;
+                    fakeRecoveryOk = fakeRecoveryOk && RestoreEndpoint(root, L"lost", missingChanged, missingStage) == ERROR_NOT_FOUND && !missingChanged;
+                } else fakeRecoveryOk = false;
                 const LONG resetResult = RegOverridePredefKey(HKEY_LOCAL_MACHINE, nullptr);
                 DWORD validInstall = 0, recordedExit = 0, knownWin32 = 1;
                 std::wstring phase;
