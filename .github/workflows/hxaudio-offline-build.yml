@@ -101,6 +101,19 @@ jobs:
           type hxaudio-cleanup-registry-tests.log
           cl /nologo /EHsc /std:c++17 /W4 /WX tests\inno_mock_helper.cpp /Fe:inno-mock-helper.exe
           if errorlevel 1 exit /b 1
+          cl /nologo /EHsc /std:c++17 /W4 /WX tests\recovery_transaction_tests.cpp /Fe:recovery-transaction-tests.exe
+          if errorlevel 1 exit /b 1
+          recovery-transaction-tests.exe > hxaudio-recovery-transaction.log 2>&1
+          if errorlevel 1 exit /b 1
+          type hxaudio-recovery-transaction.log
+          cl /nologo /EHsc /std:c++17 /W4 /WX tests\recovery_registry_fixture.cpp /Fe:recovery-registry-fixture.exe bcrypt.lib advapi32.lib
+          if errorlevel 1 exit /b 1
+
+      - name: Test transaction interruption in disposable HKCU fixture
+        shell: pwsh
+        run: |
+          & pwsh -NoProfile -File .github/scripts/test-recovery-process.ps1
+          if ($LASTEXITCODE -ne 0) { throw 'Recovery process test failed' }
 
       - name: Compile production Inno script and run isolated uninstall fixture
         shell: pwsh
